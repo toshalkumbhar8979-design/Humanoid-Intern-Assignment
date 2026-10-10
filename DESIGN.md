@@ -165,7 +165,7 @@ against yet. That needs the author's list of changes.
 (open vocabulary, over a room-object list). The colour name comes from the mean surface colour of the change. The
 sentence template uses metric size and displacement, plus a left/right and toward/away phrase from the camera's
 viewpoint. On the synthetic scene OWLv2 returned no label for the chair and labelled the box "laptop" at 0.15
-confidence. Both are expected at 128x72 resolution. I have not validated OWLv2 labels on real footage, and my real
+confidence. Both are expected at 128x72 resolution. On real crops, OWLv2 agrees with YOLO-World on 24 of 34 comparable crops (`scripts/check_labels.py`). That is agreement between two detectors, not accuracy. My real
 clips produced no voxel regions, so `descriptions/changes.md` is empty for the real pair.
 
 **Object changes.** `objects.md` describes each moved, added and removed object in metres in the floor frame, and
@@ -240,7 +240,7 @@ Status values: **Fixed** (a test or a measurement in the note), **Partly fixed**
 | Registration error about 2.4 deg / 4 cm on the synthetic pair | **Partly fixed** | Colour refinement reaches 1.13 deg / 2.1 cm on the synthetic pair (target met). It is opt-in, and on the real pair the effect is mixed. |
 | Objects under 50 voxels are dropped | **Open** | Reconstruction noise on my clips (up to 90 voxels) is larger than that cut-off. The control sets the cut-off automatically; I have not changed the rule. |
 | YOLO COCO classes only | **Partly fixed** | YOLO-World with a 30-name room vocabulary (`--detector yolo-world`, used by `run_all`). Only those 30 names are tested. |
-| Labels (OWLv2) not validated on real footage | **Open** | Validated only on the synthetic scene, at low resolution. |
+| Labels (OWLv2) not validated on real footage | **Partly fixed** | `check_labels.py` on 67 real crops: on 34 that both detectors can name, OWLv2 agrees with YOLO-World on 24 (70.6%). Agreement between two detectors, not accuracy against truth. Mug crops disagree (0 of 4). |
 | Occlusion handled only by the 'seen' count and the hidden vote | **Partly fixed** | Hidden spots give no vote; a spot seen from one frame still scores low. |
 | 60-frame reconstruction exceeds 8 GB VRAM | **Fixed** | Measured: 60 frames fit, peak 7,896 MiB of 8,151 MiB (reconstruction only). The full pipeline at 60 frames is not measured. |
 | Only one pair of captures | **Open** | Needs a new recording from the author. |
@@ -253,7 +253,7 @@ Status values: **Fixed** (a test or a measurement in the note), **Partly fixed**
 
 1. Score the object output and the voxel output against the changes I made on my clips, with `evaluate_changes.py`.
    I need the type and rough place of each change for that.
-2. Run the full `run_all.py` once with the YOLO-World object stage, and record the run time.
-3. Validate OWLv2 labels on real crops from the YOLO-World detections.
+2. Run the full `run_all.py` with the labeler on (the measured run used `--no-labeler`).
+3. Check the OWLv2 labels against a hand-labelled set of real crops, so agreement becomes accuracy.
 4. Record a second pair of captures with no changes, to measure repeatability beyond the control.
 5. Measure the floor-frame scoring mode with ground truth in the floor frame.

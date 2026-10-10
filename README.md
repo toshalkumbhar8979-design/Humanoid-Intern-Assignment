@@ -85,6 +85,7 @@ Each stage is also a standalone script in `scripts/`:
 | 5. Labels + descriptions | `describe_changes.py` | `descriptions/changes.md`, `changes.json` |
 | 6. Visualisation | `visualize.py` | `visualizations/bev.png`, `viewer.html` |
 | 7. Graphs | `make_graphs.py` | `outputs/graphs/*.png` |
+| 8. Label consistency on real crops | `check_labels.py` | `outputs/label_check/labels.json` |
 
 ### What the object output contains
 
@@ -149,9 +150,10 @@ has not been checked against ground truth, because my synthetic ground truth is 
 | Object descriptions (`objects.md`) | generated from the YOLO-World output, listing the unconfirmed objects with their reasons |
 | Object scorer (`evaluate_changes.py --objects`) | 9/9 unit tests pass, including the object mapping; no real ground truth to score yet |
 | CLI scripts (`detect_changes`, `describe_changes --no-labeler`, `visualize`) | run on the synthetic outputs |
-| OWLv2 labeler | runs on GPU; labels are unreliable on the low-resolution synthetic crops |
+| OWLv2 labeler, real crops | `check_labels.py`: agrees with YOLO-World on 24 of 34 comparable crops (70.6%); mug crops 0 of 4. Agreement, not accuracy |
+| OWLv2 labeler, synthetic crops | unreliable on the low-resolution synthetic crops |
 | Graphs (`make_graphs.py`) | run on the real outputs (exit 0); PNGs written, checked through numbers only |
-| Full pipeline on the real clips | runs end to end (`run_all.py`, exit 0) before the YOLO-World change; detects no confirmed change |
+| Full pipeline on the real clips | `run_all.py --no-labeler`: exit 0 in 889 s with the YOLO-World object stage; voxel 0 changes; objects 0 confirmed, 12 unconfirmed |
 
 `python tests/test_pipeline_glue.py` runs the post-reconstruction stages on ground-truth renders (exit 0).
 It needs no model weights and took about 20 s on the RTX 5050 machine.
@@ -181,9 +183,9 @@ third_party/    MASt3R checkout (clone, see Installation)
   per pair to stay within host RAM; with swin-5 and 84-89 frames the run ran out of memory (measured).
 - A 60-frame reconstruction also fits the 8 GB card: 7,896 MiB peak of 8,151 MiB, sampled every 3 s. The full
   pipeline at 60 frames is not measured yet, and the margin is small.
-- The full `run_all.py` on the real clips took about 25-30 minutes (measured, including the control, with COCO
+- The full `run_all.py --no-labeler` on the real clips took 889 s with the YOLO-World object stage (measured, including the control). An earlier run with COCO took about 25-30 minutes
   objects). The YOLO-World object stage has been run on its own on the real pair and on the control (about
-  2-3 minutes for both together); the full pipeline with it has not been timed yet.
+  2-3 minutes for both together); the full pipeline with it is timed above.
 - Alignment, voxel detection and output generation take about 20 s on the synthetic scene (measured).
 - OWLv2 loads in about 18 s on the GPU. Per-region labelling time and VRAM use are not yet measured.
 
@@ -196,7 +198,7 @@ See DESIGN.md, section 8, for the full status table. The main ones:
 - The footprint check is horizontal at the object's centre height, so it does not cover an object's full height.
 - The synthetic clips have rendering artefacts (about 90% of frames have black bands), so they are used only for
   geometric validation.
-- OWLv2 labels need real-resolution crops; the synthetic crops are too small, and real crops are not validated.
+- OWLv2 labels need real-resolution crops; the synthetic crops are too small, and on real crops OWLv2 agrees with YOLO-World on 70.6% of comparable crops (agreement, not accuracy).
 
 ## Licences
 
