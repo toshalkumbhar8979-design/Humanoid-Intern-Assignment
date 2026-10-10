@@ -140,8 +140,8 @@ and it confirms no change on the real pair. I count that as the honest result. T
 
 The remaining real-pair cases, with the YOLO-World run:
 
-- **Bed** (candidate move, 0.36 m, 35 cm vertical): its old and new spots are both occupied. This fits a mismatch
-  rather than a move. A bed also appears as a before-only object at its own spot.
+- **Bed** (YOLO-World matched pair, 1.02 m displacement, -0.80 m vertical): both spots are occupied. The vertical rule
+  (section 4) marks it unconfirmed. The earlier 0.36 m / 35 cm figure was from COCO. This fits a mismatch rather than a move. A bed also appears as a before-only object at its own spot.
 - **Backpack, cup, phone, refrigerator, bag, bottle, chair, mug, pillow (2)**: each spot is occupied in the other
   capture, or not in view there. `objects.md` lists the reason for each.
 
@@ -224,28 +224,28 @@ Status values: **Fixed** (a test or a measurement in the note), **Partly fixed**
 
 | Item | Status | Note |
 |---|---|---|
-| Voxel regions find 0 changes on my clips | **Open** | Control noise is at least as large as the real candidates at every voxel size and tolerance swept (section 3). |
+| Voxel regions find 0 changes on my clips | **Open** | Control noise is at least as large as the real candidates at every voxel size and tolerance swept (section 3). Why still open: no threshold separates the two, and tuning one to fit my clips would be overfitting. |
 | Object method has false alarms on an unchanged scene | **Partly fixed** | Footprint check plus YOLO-World: 0 false alarms on the control, COCO and YOLO-World. One control only. |
-| Real-pair object changes not confirmed | **Open** | 0 confirmed on the real pair (YOLO-World); 12 unconfirmed, each with its reason in `objects.md`. |
+| Real-pair object changes not confirmed | **Open** | 0 confirmed on the real pair (YOLO-World); 12 unconfirmed, each with its reason in `objects.md`. Why still open: confirming needs a clean match, and the footprint check cannot give one on these clips. |
 | Point test on the object centre | **Fixed** | Replaced by a 9-point footprint test (section 4). Measured on the real pair and the control. |
-| Bed "move" (0.36 m) has a 35 cm vertical jump | **Open** | Unconfirmed. Probably a mismatch, not a real move. |
-| Floor residual (about 19% of points below the floor) | **Open** | Stability improved, residual not reduced. Likely depth warp. |
+| Bed "move" has a vertical jump | **Partly fixed** | Rule: a matched move with a vertical jump over 0.15 m is unconfirmed, with its reason. YOLO-World's bed jump is -0.80 m; the backpack's is -1.04 m (both unconfirmed). The rule is a physical assumption (floor objects do not rise), so an object on a bed or chair can be wrongly flagged. Tested in `tests/test_detect_objects.py`. The cause (centre mismatch) is not fixed. |
+| Floor residual (about 19% of points below the floor) | **Open** | Stability improved, residual not reduced. Likely depth warp. Why still open: fixing it means changing the reconstruction, and I have not found a fix that reduces it. |
 | Floor normal unstable across RANSAC runs (4-16 deg) | **Partly fixed** | Least-squares refit and median of five runs: five of six within about 1 deg; one run still about 10 deg off. |
 | No way to score detections against what I changed | **Partly fixed** | `evaluate_changes.py` scores voxel output and, with `--objects`, object output (9 unit tests). Real scoring needs the author's list of changes. |
 | No graphs | **Fixed** | `make_graphs.py` writes three PNGs; checked through numbers only. |
 | Object-level detection did not exist | **Fixed (experimental)** | `detect_objects.py` runs in `run_all`, with the footprint check and a null check. |
 | Repository not on GitHub; submodule state dirty | **Fixed** | Pushed. MASt3R, DUSt3R and CroCo are pinned submodules, and a fresh recursive clone works. Each run regenerates `__pycache__` in the submodules; set `PYTHONDONTWRITEBYTECODE=1` to avoid it. |
-| `--frame floor` scoring mode unchecked | **Open** | Runs, but needs ground truth in the floor frame, which I do not have. |
+| `--frame floor` scoring mode unchecked | **Open** | Runs, but needs ground truth in the floor frame, which I do not have. Why still open: no floor-frame truth exists here. |
 | Descriptions file is empty on the real pair | **Partly fixed** | Object descriptions (`objects.md`) are written. No confirmed change exists on the real pair, so `changes.md` stays empty. |
 | Registration error about 2.4 deg / 4 cm on the synthetic pair | **Partly fixed** | Colour refinement reaches 1.13 deg / 2.1 cm on the synthetic pair (target met). It is opt-in, and on the real pair the effect is mixed. |
-| Objects under 50 voxels are dropped | **Open** | Reconstruction noise on my clips (up to 90 voxels) is larger than that cut-off. The control sets the cut-off automatically; I have not changed the rule. |
+| Objects under 50 voxels are dropped | **Open** | Reconstruction noise on my clips (up to 90 voxels) is larger than that cut-off. The control sets the cut-off automatically; I have not changed the rule. Why still open: a lower cut-off would let noise through, which the null check would show. |
 | YOLO COCO classes only | **Partly fixed** | YOLO-World with a 30-name room vocabulary (`--detector yolo-world`, used by `run_all`). Only those 30 names are tested. |
 | Labels (OWLv2) not validated on real footage | **Partly fixed** | `check_labels.py` on 67 real crops: on 34 that both detectors can name, OWLv2 agrees with YOLO-World on 24 (70.6%). Agreement between two detectors, not accuracy against truth. Mug crops disagree (0 of 4). |
 | Occlusion handled only by the 'seen' count and the hidden vote | **Partly fixed** | Hidden spots give no vote; a spot seen from one frame still scores low. |
 | 60-frame reconstruction exceeds 8 GB VRAM | **Fixed** | Measured: 60 frames fit, peak 7,896 MiB of 8,151 MiB (reconstruction only). The full pipeline at 60 frames is not measured. |
-| Only one pair of captures | **Open** | Needs a new recording from the author. |
+| Only one pair of captures | **Open** | Needs a new recording from the author. Why still open: I cannot record new clips from here. |
 | Symmetric or flat scenes can flip the alignment | **Partly fixed** | Gravity prior and yaw sweep fix the case I tested. Other scenes are untested. |
-| Synthetic clip artefacts (black bands) | **Open** | Synthetic clips are used only for geometry checks, not for a full run. |
+| Synthetic clip artefacts (black bands) | **Open** | Synthetic clips are used only for geometry checks, not for a full run. Why still open: the bands come from the clip generator, and fixing them means regenerating the clips. |
 | MASt3R weights CC BY-NC-SA; YOLOv8 AGPL-3.0 | **By design** | Project is non-commercial. |
 | Raw clips and reconstructions are not in the repo | **By design** | `data/`, `outputs/`, `models/` and `weights/` are git-ignored. |
 

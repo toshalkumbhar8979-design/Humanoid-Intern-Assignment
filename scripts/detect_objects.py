@@ -226,6 +226,17 @@ def pair_objects(before: list[dict], after: list[dict], max_move_m: float):
     return pairs, unmatched_b, unmatched_a
 
 
+def vertical_reason(vertical_m: float, max_vertical: float) -> str | None:
+    """Reason a candidate move is rejected for a vertical jump, or None if the jump is allowed.
+
+    The floor frame has z up and objects in these rooms stand on the floor, so a real move on the floor
+    changes x and y, not height. A jump above --max-vertical is a mismatch of the object's 3D centre.
+    """
+    if abs(vertical_m) <= max_vertical:
+        return None
+    return f"vertical jump {vertical_m:+.2f} m (floor objects do not rise; likely a centre mismatch)"
+
+
 def classify(before: list[dict], after: list[dict], rec_b: dict, rec_a: dict,
              Zb: np.ndarray, Za: np.ndarray, args) -> list[dict]:
     """Turn matched and unmatched objects into stayed / moved / removed / added / unconfirmed records."""
@@ -245,8 +256,10 @@ def classify(before: list[dict], after: list[dict], rec_b: dict, rec_a: dict,
         old_spot = check(b["xyz"], rec_a, Za)   # the old spot should now be empty
         new_spot = check(a["xyz"], rec_b, Zb)   # the new spot should have been empty before
         ok = old_spot["status"] == "empty" and new_spot["status"] == "empty"
-        out.append({**rec, "kind": "moved" if ok else "unconfirmed", "side": "matched pair",
-                    "old_spot": old_spot, "new_spot": new_spot})
+        reason = vertical_reason(rec["vertical_m"], args.max_vertical)
+        confirmed = ok and reason is None
+        out.append({**rec, "kind": "moved" if confirmed else "unconfirmed", "side": "matched pair",
+                    "old_spot": old_spot, "new_spot": new_spot, "reason": reason})
     for b in ub:
         s = check(b["xyz"], rec_a, Za)
         kind = "removed" if s["status"] == "empty" else "unconfirmed"
@@ -282,6 +295,8 @@ def describe_objects(changes: list[dict]) -> str:
     for c in (c for c in changes if c["kind"] == "unconfirmed"):
         if c["side"] == "matched pair":
             why = f"candidate move, old spot {c['old_spot']['status']}, new spot {c['new_spot']['status']}"
+            if c.get("reason"):
+                why += f"; {c['reason']}"
         else:
             key = "spot_in_after" if c["side"] == "before only" else "spot_in_before"
             why = f"spot {c[key]['status']} in the other capture"
@@ -315,6 +330,8 @@ def main() -> int:
     ap.add_argument("--radius", type=float, default=0.4, help="metres: a surface this far in front of a spot hides it")
     ap.add_argument("--min-votes", type=int, default=2, help="frames that must see a spot as empty")
     ap.add_argument("--footprint", type=float, default=0.15, help="metres: radius of the footprint ring around each object centre")
+    ap.add_argument("--max-vertical", type=float, default=0.15,
+                    help="metres: a candidate move with a larger vertical jump is unconfirmed (floor objects do not rise)")
     args = ap.parse_args()
 
     import torch
