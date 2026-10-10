@@ -1,23 +1,35 @@
-"""Object-level change detection: YOLO boxes lifted to 3D with the MASt3R pointmaps.
+"""Object-level change detection: YOLO boxes lifted to 3D with the MASt3R pointmaps, checked for visibility.
 
 For every reconstructed frame, YOLOv8 finds objects (COCO classes). The box's central region is looked up in
-that frame's pointmap, giving a 3D position in the capture's frame (metres). Observations of the same class
-that lie within --merge m of each other are merged into one object per capture, and objects seen in fewer
-than --min-frames frames are dropped. Objects of the same class are then matched across captures (Hungarian
-assignment on 3D distance):
+that frame's pointmap, giving a 3D position in the shared floor frame (metres). Observations of the same class
+that lie within --merge m of each other are merged into one object per capture, and objects seen in fewer than
+--min-frames frames are dropped. Same-class objects are then matched across captures (Hungarian assignment on
+3D distance).
 
-  stayed   matched, displacement < --same m
-  moved    matched, --same m <= displacement <= --max-move m, displacement reported in metres
-  removed  only in the before capture
-  added    only in the after capture
+Each unmatched or moved object is then checked against the other capture. Its 3D spot is projected into every
+frame of the other capture and compared with that frame's depth at the same pixel:
 
-  python scripts/detect_objects.py \
-      --before-recon outputs/reconstructions/before.npz --before-frames data/before/frames \
-      --after-recon outputs/reconstructions/after_aligned.npz --after-frames data/after/frames \
+  empty     the ray reaches the spot and the surface is behind it: nothing is there now
+  occupied  a surface sits at or just in front of the spot: something is there now
+  unknown   the spot is not in view, or the surface in front hides it
+
+An object counts as removed (or added) only when the spot is 'empty' in at least --min-votes frames and
+'occupied' in none. A matched pair counts as moved only when both its old and its new spot are 'empty'.
+Everything else is reported as 'unconfirmed' rather than as a change.
+
+  stayed       matched, displacement < --same m
+  moved        matched, --same m <= displacement <= --max-move m, both spots confirmed empty
+  removed      only in the before capture, spot confirmed empty in the after capture
+  added        only in the after capture, spot confirmed empty in the before capture
+  unconfirmed  anything the visibility check could not confirm (kept for review, not counted as a change)
+
+  python scripts/detect_objects.py \\
+      --before-recon outputs/reconstructions/before.npz --before-frames data/before/frames \\
+      --after-recon outputs/reconstructions/after_aligned.npz --after-frames data/after/frames \\
       --out outputs/objects
 
 Null check (run this as well): pass the control capture as the 'after' side. Every object should come out as
-'stayed' there; anything else is a false alarm of the object method.
+'stayed' or 'unconfirmed' there; any 'moved', 'removed' or 'added' is a false alarm of the object method.
 """
 import argparse
 import json
@@ -102,8 +114,70 @@ def cluster(obs: list[dict], merge_m: float, min_frames: int) -> list[dict]:
     return out
 
 
-def match(before: list[dict], after: list[dict], same_m: float, max_move_m: float) -> list[dict]:
-    res = []
+def depth_maps(recon: dict, conf_q: float = 0.5) -> np.ndarray:
+    """Per frame: depth z in that camera of every confident pointmap point (NaN where not confident)."""
+    P, C, c2w = recon["points"], recon["conf"], recon["c2w"]
+    Z = np.full(C.shape, np.nan, np.float32)
+    for i in range(C.shape[0]):
+        pos = C[i][C[i] > 0]
+        thr = np.quantile(pos, conf_q) if pos.size else np.inf
+        ok = np.isfinite(P[i]).all(-1) & (C[i] >= thr)
+        w2c = np.linalg.inv(c2w[i])
+        Pc = P[i] @ w2c[:3, :3].T + w2c[:3, 3]
+        Z[i] = np.where(ok, Pc[..., 2], np.nan)
+    return Z
+
+
+def project(X: np.ndarray, w2c: np.ndarray, focal: float, H: int, W: int):
+    """Pixel (u, v) and depth z of world point X in a camera; None if behind the camera or off the image."""
+    Xc = w2c[:3, :3] @ X + w2c[:3, 3]
+    z = Xc[2]
+    if z < 0.1:
+        return None
+    u = focal * Xc[0] / z + W / 2
+    v = focal * Xc[1] / z + H / 2
+    if not (0 <= u < W and 0 <= v < H):
+        return None
+    return int(round(u)), int(round(v)), float(z)
+
+
+def spot_status(X: np.ndarray, other: dict, Z: np.ndarray, margin: float, radius: float,
+                min_votes: int) -> dict:
+    """Look at world point X from every frame of the other capture and vote empty / occupied / hidden.
+
+    The ray through X reaches the surface behind it (depth > z + margin): X is empty in that frame.
+    A surface within [z - radius, z + margin]: something occupies X. A surface in front of X by more than
+    radius: X is hidden in that frame and gives no vote.
+    """
+    H, W = Z.shape[1:]
+    empty = occupied = seen = 0
+    for i in range(Z.shape[0]):
+        p = project(X, np.linalg.inv(other["c2w"][i]), float(other["focals"][i]), H, W)
+        if p is None:
+            continue
+        u, v, zx = p
+        win = Z[i, max(0, v - 2):v + 3, max(0, u - 2):u + 3]
+        zs = win[np.isfinite(win)]
+        if zs.size == 0:
+            continue
+        seen += 1
+        zo = float(np.median(zs))
+        if zo > zx + margin:
+            empty += 1
+        elif zo >= zx - radius:
+            occupied += 1
+    if occupied == 0 and empty >= min_votes:
+        status = "empty"
+    elif occupied > 0:
+        status = "occupied"
+    else:
+        status = "unknown"
+    return {"status": status, "empty": empty, "occupied": occupied, "seen": seen}
+
+
+def pair_objects(before: list[dict], after: list[dict], max_move_m: float):
+    """Hungarian match of same-class objects. Returns (pairs, unmatched_before, unmatched_after)."""
+    pairs, unmatched_b, unmatched_a = [], [], []
     for cls in sorted({o["cls"] for o in before + after}):
         B = [o for o in before if o["cls"] == cls]
         A = [o for o in after if o["cls"] == cls]
@@ -117,30 +191,49 @@ def match(before: list[dict], after: list[dict], same_m: float, max_move_m: floa
                     continue
                 used_b.add(i)
                 used_a.add(j)
-                res.append({"cls": cls, "kind": "stayed" if d < same_m else "moved",
-                            "displacement_m": round(d, 3),
-                            "before_xyz": np.round(B[i]["xyz"], 3).tolist(),
-                            "after_xyz": np.round(A[j]["xyz"], 3).tolist(),
-                            "frames_before": B[i]["frames"], "frames_after": A[j]["frames"]})
-        for i, b in enumerate(B):
-            if i not in used_b:
-                res.append({"cls": cls, "kind": "removed", "displacement_m": None,
-                            "before_xyz": np.round(b["xyz"], 3).tolist(), "after_xyz": None,
-                            "frames_before": b["frames"], "frames_after": 0})
-        for j, a in enumerate(A):
-            if j not in used_a:
-                res.append({"cls": cls, "kind": "added", "displacement_m": None,
-                            "before_xyz": None, "after_xyz": np.round(a["xyz"], 3).tolist(),
-                            "frames_before": 0, "frames_after": a["frames"]})
-    return res
+                pairs.append((B[i], A[j], d))
+        unmatched_b += [b for i, b in enumerate(B) if i not in used_b]
+        unmatched_a += [a for j, a in enumerate(A) if j not in used_a]
+    return pairs, unmatched_b, unmatched_a
 
 
-def run_side(recon_path: Path, frames_dir: Path, max_frames: int, model, device, args) -> tuple[list[dict], int]:
-    recon = dict(np.load(recon_path))
-    files = frame_paths(frames_dir, max_frames)
-    if len(files) != len(recon["points"]):
-        raise SystemExit(f"{recon_path.name}: {len(recon['points'])} pointmaps but {len(files)} frames; "
-                         f"pass the frames used for this reconstruction")
+def classify(before: list[dict], after: list[dict], rec_b: dict, rec_a: dict,
+             Zb: np.ndarray, Za: np.ndarray, args) -> list[dict]:
+    """Turn matched and unmatched objects into stayed / moved / removed / added / unconfirmed records."""
+    def check(X, other, Z):
+        return spot_status(X, other, Z, args.margin, args.radius, args.min_votes)
+
+    out = []
+    pairs, ub, ua = pair_objects(before, after, args.max_move)
+    for b, a, d in pairs:
+        rec = {"cls": b["cls"], "displacement_m": round(d, 3),
+               "vertical_m": round(float(a["xyz"][2] - b["xyz"][2]), 3),
+               "before_xyz": np.round(b["xyz"], 3).tolist(), "after_xyz": np.round(a["xyz"], 3).tolist(),
+               "frames_before": b["frames"], "frames_after": a["frames"]}
+        if d < args.same:
+            out.append({**rec, "kind": "stayed"})
+            continue
+        old_spot = check(b["xyz"], rec_a, Za)   # the old spot should now be empty
+        new_spot = check(a["xyz"], rec_b, Zb)   # the new spot should have been empty before
+        ok = old_spot["status"] == "empty" and new_spot["status"] == "empty"
+        out.append({**rec, "kind": "moved" if ok else "unconfirmed", "side": "matched pair",
+                    "old_spot": old_spot, "new_spot": new_spot})
+    for b in ub:
+        s = check(b["xyz"], rec_a, Za)
+        kind = "removed" if s["status"] == "empty" else "unconfirmed"
+        out.append({"cls": b["cls"], "kind": kind, "side": "before only", "displacement_m": None,
+                    "before_xyz": np.round(b["xyz"], 3).tolist(), "after_xyz": None,
+                    "frames_before": b["frames"], "frames_after": 0, "spot_in_after": s})
+    for a in ua:
+        s = check(a["xyz"], rec_b, Zb)
+        kind = "added" if s["status"] == "empty" else "unconfirmed"
+        out.append({"cls": a["cls"], "kind": kind, "side": "after only", "displacement_m": None,
+                    "before_xyz": None, "after_xyz": np.round(a["xyz"], 3).tolist(),
+                    "frames_before": 0, "frames_after": a["frames"], "spot_in_before": s})
+    return out
+
+
+def side_objects(recon: dict, files: list[Path], model, device, args) -> list[dict]:
     obs = observations(recon, files, model, device, args.min_conf)
     return cluster(obs, args.merge, args.min_frames), len(obs)
 
@@ -159,6 +252,9 @@ def main() -> int:
     ap.add_argument("--min-frames", type=int, default=3, help="an object must be seen in at least this many frames")
     ap.add_argument("--same", type=float, default=0.3, help="metres: matched objects closer than this have stayed")
     ap.add_argument("--max-move", type=float, default=4.0, help="metres: matches farther than this are not the same object")
+    ap.add_argument("--margin", type=float, default=0.15, help="metres: depth gap that counts as empty space")
+    ap.add_argument("--radius", type=float, default=0.4, help="metres: a surface this far in front of a spot hides it")
+    ap.add_argument("--min-votes", type=int, default=2, help="frames that must see a spot as empty")
     args = ap.parse_args()
 
     import torch
@@ -166,17 +262,21 @@ def main() -> int:
     device = 0 if torch.cuda.is_available() else "cpu"
     model = YOLO(str(args.model))
 
-    before, n_b = run_side(args.before_recon, args.before_frames, args.max_frames, model, device, args)
-    after, n_a = run_side(args.after_recon, args.after_frames, args.max_frames, model, device, args)
-    changes = match(before, after, args.same, args.max_move)
+    rec_b = dict(np.load(args.before_recon))
+    rec_a = dict(np.load(args.after_recon))
+    before, n_b = side_objects(rec_b, frame_paths(args.before_frames, args.max_frames), model, device, args)
+    after, n_a = side_objects(rec_a, frame_paths(args.after_frames, args.max_frames), model, device, args)
+    Zb, Za = depth_maps(rec_b), depth_maps(rec_a)
+    changes = classify(before, after, rec_b, rec_a, Zb, Za, args)
 
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "objects.json").write_text(json.dumps(changes, indent=2))
-    counts = {k: sum(c["kind"] == k for c in changes) for k in ("stayed", "moved", "added", "removed")}
+    kinds = ("stayed", "moved", "removed", "added", "unconfirmed")
+    counts = {k: sum(c["kind"] == k for c in changes) for k in kinds}
     print(f"objects: before {len(before)} (from {n_b} YOLO hits), after {len(after)} (from {n_a}) -> {counts}")
     for c in changes:
-        if c["kind"] == "moved":
-            print(f"  moved {c['cls']}: {c['displacement_m']:.2f} m  {c['before_xyz']} -> {c['after_xyz']}")
+        if c["kind"] in ("moved", "removed", "added"):
+            print(f"  {c['kind']:<8} {c['cls']}: {c['displacement_m'] if c['displacement_m'] is not None else '-'} m")
     print(f"wrote {args.out / 'objects.json'}")
     return 0
 
