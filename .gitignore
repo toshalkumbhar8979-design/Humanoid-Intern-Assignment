@@ -5,3 +5,6 @@ data/before/
 data/after/
 outputs/
 models/
+
+# YOLO-World writes its CLIP text model here
+weights/

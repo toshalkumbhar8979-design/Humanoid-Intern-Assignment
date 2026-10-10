@@ -58,10 +58,10 @@ def main():
     # object level: YOLO boxes lifted to 3D, matched across captures; the control is the null check
     run(S / "detect_objects.py", "--before-recon", recon / "before.npz", "--before-frames", frames["before"],
         "--after-recon", recon / "after_aligned.npz", "--after-frames", frames["after"],
-        "--max-frames", args.max_frames, "--out", O / "objects")
+        "--max-frames", args.max_frames, "--detector", "yolo-world", "--out", O / "objects")
     run(S / "detect_objects.py", "--before-recon", recon / "before.npz", "--before-frames", frames["before"],
         "--after-recon", ctrl / "align" / "reconstructions" / "after_aligned.npz", "--after-frames", ctrl / "frames",
-        "--max-frames", args.max_frames, "--out", O / "objects_null")
+        "--max-frames", args.max_frames, "--detector", "yolo-world", "--out", O / "objects_null")
     print(f"\nDone. See {O / 'descriptions' / 'changes.md'}, {O / 'visualizations'} and {O / 'graphs'}")
 
 

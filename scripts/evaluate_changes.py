@@ -80,6 +80,20 @@ def score(detections: list[dict], truth: list[dict], tol: float = 0.5) -> dict:
     }
 
 
+def objects_to_detections(objects: list[dict]) -> list[dict]:
+    """Map detect_objects.py records to the scorer's schema. Only confirmed moved / added / removed count.
+
+    stayed and unconfirmed records are not detections: an unconfirmed object is not reported as a change.
+    """
+    out = []
+    for i, o in enumerate(objects):
+        if o.get("kind") not in KINDS:
+            continue
+        out.append({"id": i, "kind": o["kind"], "cls": o.get("cls"),
+                    "centroid_before": o.get("before_xyz"), "centroid_after": o.get("after_xyz")})
+    return out
+
+
 def to_floor_frame(detections: list[dict], before_npz: Path) -> list[dict]:
     """Rotate centroids into the bird's-eye frame: floor normal -> z, floor at z = 0."""
     from registration.align import surface_points
@@ -112,6 +126,8 @@ def main() -> int:
     ap.add_argument("--tol", type=float, default=0.5, help="position tolerance in metres (default 0.5)")
     ap.add_argument("--frame", choices=("raw", "floor"), default="raw")
     ap.add_argument("--before", type=Path, default=None, help="before reconstruction .npz (needed for --frame floor)")
+    ap.add_argument("--objects", action="store_true",
+                    help="detections are objects.json from detect_objects.py (only confirmed moved/added/removed count)")
     args = ap.parse_args()
 
     try:
@@ -128,6 +144,8 @@ def main() -> int:
             print(f"error: ground-truth entry {g.get('name')!r} has type {g.get('type')!r}, expected one of {KINDS}",
                   file=sys.stderr)
             return 1
+    if args.objects:
+        detections = objects_to_detections(detections)
     if args.frame == "floor":
         if args.before is None:
             print("error: --frame floor needs --before", file=sys.stderr)

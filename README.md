@@ -8,10 +8,12 @@ frame, looks for changes in 3D (by voxel regions and by object), and labels what
 before.mp4 ─► frames ─► MASt3R ─┐
                                 ├─► align (floor prior + ICP) ─► voxel regions ─► OWLv2 labels ─► descriptions
 after.mp4  ─► frames ─► MASt3R ─┘        │                                          └► bird's-eye map + 3D viewer
-                                         └─► YOLO objects lifted to 3D ─► matched across clips ─► visibility check
+                                         └─► YOLO-World objects lifted to 3D ─► matched across clips ─► footprint check
 ```
 
-Design choices and their trade-offs are in [DESIGN.md](DESIGN.md).
+Design choices and their trade-offs are in [DESIGN.md](DESIGN.md). The sources behind each technique, and what
+each one leaves open, are in [research.md](research.md). The working rules for this repository are in
+[agentbible.md](agentbible.md).
 
 ## Status on my own clips (read this first)
 
@@ -20,10 +22,9 @@ changes on them**:
 
 - The voxel detector reports 0 changes. The reconstructions of the two clips disagree by about as much as the
   changes themselves, and no setting I swept separates the changes from that noise (DESIGN.md, section 3).
-- The object detector, with its visibility check, confirms 0 changes on the real pair. Six objects are left
-  unconfirmed, each with a recorded reason (DESIGN.md, section 4).
-- On the no-change control the object detector produces 1 false "removed" (a chair). Before the visibility check
-  it produced 4 false alarms.
+- The object detector, with its footprint visibility check and the YOLO-World vocabulary, confirms 0 changes on
+  the real pair. Twelve objects stay unconfirmed, each with a recorded reason in `objects.md`.
+- On the no-change control, the footprint check removes every false alarm, for both COCO and YOLO-World.
 
 So there are no example change outputs from my own clips yet. The example below comes from the synthetic scene.
 
@@ -53,12 +54,14 @@ Requires Python 3.11 and an NVIDIA GPU for reasonable speed (tested on an RTX 50
 python -m venv .venv
 source .venv/bin/activate          # Windows (Git Bash): source .venv/Scripts/activate
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-pip install -r requirements.txt    # includes ultralytics (YOLOv8) for the object stage
+pip install -r requirements.txt    # includes ultralytics (YOLO and YOLO-World) for the object stage
 git clone --depth 1 https://github.com/naver/mast3r.git third_party/mast3r   # MASt3R/DUSt3R code
 ```
 
-Model weights are downloaded on first use: MASt3R metric ViT-L and OWLv2 from Hugging Face, and YOLOv8n from
-ultralytics into `models/` (git-ignored).With Conda, run `conda env create -f environment.yml` and then the same `pip` steps for torch and MASt3R.
+Model weights are downloaded on first use: MASt3R metric ViT-L and OWLv2 from Hugging Face. YOLOv8n and
+YOLO-World (`yolov8s-worldv2.pt`) come from ultralytics into `models/` (git-ignored). YOLO-World also writes a CLIP
+text model into `weights/` (git-ignored). With Conda, run `conda env create -f environment.yml` and then the same
+`pip` steps for torch and MASt3R.
 
 ## Reproduce
 
@@ -75,10 +78,10 @@ Each stage is also a standalone script in `scripts/`:
 |---|---|---|
 | 1. Frame extraction + quality filter | `extract_frames.py` | `data/*/frames/` + `manifest.json` |
 | 2. Dense reconstruction (MASt3R) | `reconstruct.py` | `outputs/reconstructions/*.npz`, `*.ply` |
-| 3. Alignment | `align.py` | `after_aligned.npz`, `alignment/alignment.json` |
+| 3. Alignment | `align.py` (`--color` adds colour ICP, off by default) | `after_aligned.npz`, `alignment/alignment.json` |
 | 3b. No-change control | `make_control.py`, `reconstruct.py`, `align.py` | `control/` (noise floor for detection) |
 | 4. Voxel change regions | `detect_changes.py` (`--null` = control) | `change_maps/changes.pkl`, `changes.json` |
-| 4b. Object changes | `detect_objects.py` (run on the real pair and on the control) | `objects/objects.json`, `objects_null/objects.json` |
+| 4b. Object changes | `detect_objects.py --detector yolo-world` (real pair, then control) | `objects/objects.json`, `objects/objects.md`, `objects_null/objects.json` |
 | 5. Labels + descriptions | `describe_changes.py` | `descriptions/changes.md`, `changes.json` |
 | 6. Visualisation | `visualize.py` | `visualizations/bev.png`, `viewer.html` |
 | 7. Graphs | `make_graphs.py` | `outputs/graphs/*.png` |
@@ -88,11 +91,12 @@ Each stage is also a standalone script in `scripts/`:
 `objects/objects.json` has one record per object. Each record has a `kind`:
 
 - `stayed`: matched across the clips, displacement under 0.3 m.
-- `moved`: matched, displacement 0.3-4 m, with the old and new spot both confirmed empty. It also reports `vertical_m`.
+- `moved`: matched, displacement 0.3-4 m, with both the old and the new spot confirmed empty. It also reports `vertical_m`.
 - `removed` / `added`: only in one clip, and the spot is confirmed empty in the other clip.
-- `unconfirmed`: anything the visibility check could not confirm. It is kept for review and is not a change.
+- `unconfirmed`: anything the footprint check could not confirm, with the reason. It is kept for review and is not a change.
 
 Each record also gives the class, the 3D positions in metres (floor frame), and the votes behind the decision.
+`objects.md` restates the same records in plain language and lists each unconfirmed object with its reason.
 
 ## Capture protocol
 
@@ -119,32 +123,38 @@ Score by change type only (or with rough positions): for each change I made, I w
 `data/real_ground_truth.template.json`, fill in the changes, and run:
 
 ```bash
-python scripts/evaluate_changes.py outputs/change_maps/changes.json my_truth.json
+python scripts/evaluate_changes.py outputs/change_maps/changes.json my_truth.json          # voxel regions
+python scripts/evaluate_changes.py outputs/objects/objects.json my_truth.json --objects    # object output
 ```
 
-It prints each match, miss and false alarm, then precision and recall. Positions are optional.
-`--frame floor --before outputs/reconstructions/before.npz` scores in the bird's-eye frame; that mode has not
-been checked against ground truth yet. The scorer reads voxel-region output. Object output has no scorer yet.
+It prints each match, miss and false alarm, then precision and recall. Positions are optional. With `--objects`,
+only confirmed `moved`, `added` and `removed` records count as detections.
+`--frame floor --before outputs/reconstructions/before.npz` scores in the bird's-eye frame. That mode runs, but it
+has not been checked against ground truth, because my synthetic ground truth is stored in the raw frame.
 
 ## Verification status
 
 | Check | Result |
 |---|---|
 | MASt3R on the RTX 5050 (3 photos, 512 px, 100 iterations) | runs, 22 s, finite pointmaps and poses |
-| Alignment recovers a known rigid perturbation of 25 deg yaw + 0.4 m shift | 2.4 deg / 4.4 cm (target was 2 deg / 5 cm, see DESIGN.md) |
+| MASt3R on the RTX 5050, 60 frames (reconstruction only) | exit 0; peak 7,896 MiB of 8,151 MiB (sampled every 3 s) |
+| Alignment recovers a known rigid perturbation of 25 deg yaw + 0.4 m shift | 2.41 deg / 4.4 cm without colour; 1.13 deg / 2.1 cm with `--color` (target 2 deg / 5 cm) |
+| Colour ICP on the real pair | fitness 0.625 vs 0.653 without; RMSE 2.14 vs 2.19 cm. Mixed, so it stays off by default |
 | Change detection vs. synthetic ground truth (4 changes) | 4/4 correct kinds; moved distances 1.2 m / 0.9 m (GT 1.2 / 0.8) |
 | Voxel regions on the real pair | run, but 0 regions above the noise floor (DESIGN.md, section 3) |
-| Object stage on the real pair | runs (exit 0): 6 stayed, 0 confirmed changes, 6 unconfirmed |
-| Object stage on the no-change control | runs (exit 0): 6 stayed, 1 false "removed" (chair), 3 unconfirmed |
-| Projection convention for the visibility check | each frame's pointmap projects back onto its own pixels with 0 px median error (frames 0 and 20 tested) |
+| Projection convention for the visibility check | each frame's pointmap projects back onto its own pixels with 0 px median error |
+| Object stage, YOLO-World, real pair | exit 0: 7 stayed, 0 confirmed changes, 12 unconfirmed |
+| Object stage, YOLO-World, no-change control | exit 0: 10 stayed, 0 false alarms, 6 unconfirmed |
+| Object stage, COCO, footprint check (earlier) | real pair 6 stayed, 6 unconfirmed; control 6 stayed, 4 unconfirmed, 0 false alarms |
+| Object descriptions (`objects.md`) | generated from the YOLO-World output, listing the unconfirmed objects with their reasons |
+| Object scorer (`evaluate_changes.py --objects`) | 9/9 unit tests pass, including the object mapping; no real ground truth to score yet |
 | CLI scripts (`detect_changes`, `describe_changes --no-labeler`, `visualize`) | run on the synthetic outputs |
 | OWLv2 labeler | runs on GPU; labels are unreliable on the low-resolution synthetic crops |
 | Graphs (`make_graphs.py`) | run on the real outputs (exit 0); PNGs written, checked through numbers only |
-| Scoring against ground truth (`evaluate_changes.py`) | 8/8 unit tests pass; on synthetic detections 4/4 matched at 0.00-0.11 m |
-| Full pipeline on the real clips | runs end to end (`run_all.py`, exit 0); detects no confirmed change |
+| Full pipeline on the real clips | runs end to end (`run_all.py`, exit 0) before the YOLO-World change; detects no confirmed change |
 
-`python tests/test_pipeline_glue.py` runs the post-reconstruction stages on ground-truth renders.
-It needs no model weights and took 20 s on the RTX 5050 machine.
+`python tests/test_pipeline_glue.py` runs the post-reconstruction stages on ground-truth renders (exit 0).
+It needs no model weights and took about 20 s on the RTX 5050 machine.
 
 ## Repository layout
 
@@ -152,14 +162,15 @@ It needs no model weights and took 20 s on the RTX 5050 machine.
 scripts/        one CLI per pipeline stage, plus run_all.py and the synthetic data generator
 src/
   reconstruction/   MASt3R backend (pairwise pointmaps + global alignment)
-  registration/     floor estimation, gravity-prior ICP alignment
+  registration/     floor estimation, gravity-prior ICP alignment, optional colour ICP
   change_detection/ ray-carved voxel occupancy, clustering, moved/added/removed classification
   semantics/        OWLv2 labelling of the best camera crop, grounded text
   visualization/    bird's-eye PNG and interactive plotly viewer
 tests/          glue test, scorer tests and ground-truth checks
 demo/           example outputs that are committed
 outputs/        generated (git-ignored)
-models/         YOLO weights (git-ignored)
+models/         YOLO and YOLO-World weights (git-ignored)
+weights/        CLIP text model used by YOLO-World (git-ignored)
 third_party/    MASt3R checkout (clone, see Installation)
 ```
 
@@ -168,8 +179,11 @@ third_party/    MASt3R checkout (clone, see Installation)
 - MASt3R, 512 px, sequential scene graph (swin-2), capped at 40 frames (`--max-frames`): on the real 30 s
   clips, the 300-iteration global alignment took about 55 s per sequence on the RTX 5050. Descriptors are dropped
   per pair to stay within host RAM; with swin-5 and 84-89 frames the run ran out of memory (measured).
-- The full `run_all.py` on the real clips took about 25-30 minutes (measured, including the control).
-- The object stage (YOLO on 40 frames per side, plus the visibility check) took under 2.5 minutes for both runs (measured).
+- A 60-frame reconstruction also fits the 8 GB card: 7,896 MiB peak of 8,151 MiB, sampled every 3 s. The full
+  pipeline at 60 frames is not measured yet, and the margin is small.
+- The full `run_all.py` on the real clips took about 25-30 minutes (measured, including the control, with COCO
+  objects). The YOLO-World object stage has been run on its own on the real pair and on the control (about
+  2-3 minutes for both together); the full pipeline with it has not been timed yet.
 - Alignment, voxel detection and output generation take about 20 s on the synthetic scene (measured).
 - OWLv2 loads in about 18 s on the GPU. Per-region labelling time and VRAM use are not yet measured.
 
@@ -178,13 +192,13 @@ third_party/    MASt3R checkout (clone, see Installation)
 See DESIGN.md, section 8, for the full status table. The main ones:
 
 - The voxel detector finds nothing on my real clips, and the object detector confirms nothing there either.
-- The object visibility check tests one point (the object's centre), so it cannot judge objects that sit on a surface.
+- The object vocabulary has 30 names. Objects outside that list are not found.
+- The footprint check is horizontal at the object's centre height, so it does not cover an object's full height.
 - The synthetic clips have rendering artefacts (about 90% of frames have black bands), so they are used only for
   geometric validation.
-- Registration of the flat, feature-poor synthetic floor is approximate (2.4 deg / 4 cm).
-- OWLv2 labels need real-resolution crops; the synthetic crops are too small.
+- OWLv2 labels need real-resolution crops; the synthetic crops are too small, and real crops are not validated.
 
 ## Licences
 
 MASt3R and its weights are CC BY-NC-SA 4.0, which restricts use to non-commercial purposes. OWLv2 is
-Apache-2.0. YOLOv8 (ultralytics) is AGPL-3.0. This project's code is for evaluation and research.
+Apache-2.0. YOLOv8 and YOLO-World (ultralytics) are AGPL-3.0. This project's code is for evaluation and research.

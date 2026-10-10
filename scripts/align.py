@@ -26,14 +26,16 @@ def main():
     ap.add_argument("before", type=Path)
     ap.add_argument("after", type=Path)
     ap.add_argument("--out", type=Path, default=ROOT / "outputs")
+    ap.add_argument("--color", action="store_true",
+                    help="add colour-aware ICP refinement (Park et al. 2017) after the point-to-plane fit")
     args = ap.parse_args()
 
     before = dict(np.load(args.before))
     after = dict(np.load(args.after))
-    pb, pa = surface_points(before)[0], surface_points(after)[0]
+    (pb, cb), (pa, ca) = surface_points(before), surface_points(after)
     up_b = estimate_up(pb, before["c2w"][0])[0]
     up_a = estimate_up(pa, after["c2w"][0])[0]
-    res = align(pb, pa, up_before=up_b, up_after=up_a)
+    res = align(pb, pa, up_before=up_b, up_after=up_a, colors_before=cb, colors_after=ca, use_color=args.color)
     print("alignment:", res.summary())
     if res.fitness < 0.3:
         print("WARNING: low overlap - the two captures may not share enough structure; check the overlay.")

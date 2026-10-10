@@ -42,6 +42,12 @@ from scipy.optimize import linear_sum_assignment
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = ROOT / "models" / "yolov8n.pt"
+WORLD_MODEL = ROOT / "models" / "yolov8s-worldv2.pt"
+# Open-vocabulary prompts for YOLO-World: room objects that COCO does not name (desk, mug, pillow, book, ...).
+# Chosen before looking at the results, from typical desk and living-room objects.
+ROOM_VOCAB = ["chair", "table", "desk", "backpack", "bag", "suitcase", "box", "cup", "mug", "bottle",
+              "laptop", "monitor", "keyboard", "mouse", "book", "phone", "plant", "lamp", "pillow", "shoe",
+              "bowl", "toy", "remote", "speaker", "printer", "person", "bed", "sofa", "tv", "refrigerator"]
 
 
 def frame_paths(frames_dir: Path, max_frames: int) -> list[Path]:
@@ -175,6 +181,29 @@ def spot_status(X: np.ndarray, other: dict, Z: np.ndarray, margin: float, radius
     return {"status": status, "empty": empty, "occupied": occupied, "seen": seen}
 
 
+def footprint_status(X: np.ndarray, other: dict, Z: np.ndarray, args) -> dict:
+    """Vote on the object's footprint: its centre and 8 points on a ring at the same height.
+
+    A spot is 'empty' when at least two thirds of the sample points that get a vote are empty, and 'occupied'
+    when at least one third are occupied. This is the footprint test that replaces the single-point test: a
+    centre point that lands on a support or a wall no longer decides the answer on its own.
+    """
+    samples = [X] + [X + np.array([args.footprint * np.cos(t), args.footprint * np.sin(t), 0.0])
+                     for t in np.linspace(0, 2 * np.pi, 8, endpoint=False)]
+    votes = [spot_status(s, other, Z, args.margin, args.radius, args.min_votes)["status"] for s in samples]
+    n_empty, n_occ = votes.count("empty"), votes.count("occupied")
+    voting = n_empty + n_occ
+    if voting < 3:
+        status = "unknown"
+    elif n_occ * 3 >= voting:
+        status = "occupied"
+    elif n_empty * 3 >= 2 * voting:
+        status = "empty"
+    else:
+        status = "unknown"
+    return {"status": status, "empty_samples": n_empty, "occupied_samples": n_occ, "samples": len(samples)}
+
+
 def pair_objects(before: list[dict], after: list[dict], max_move_m: float):
     """Hungarian match of same-class objects. Returns (pairs, unmatched_before, unmatched_after)."""
     pairs, unmatched_b, unmatched_a = [], [], []
@@ -201,7 +230,7 @@ def classify(before: list[dict], after: list[dict], rec_b: dict, rec_a: dict,
              Zb: np.ndarray, Za: np.ndarray, args) -> list[dict]:
     """Turn matched and unmatched objects into stayed / moved / removed / added / unconfirmed records."""
     def check(X, other, Z):
-        return spot_status(X, other, Z, args.margin, args.radius, args.min_votes)
+        return footprint_status(X, other, Z, args)
 
     out = []
     pairs, ub, ua = pair_objects(before, after, args.max_move)
@@ -233,6 +262,33 @@ def classify(before: list[dict], after: list[dict], rec_b: dict, rec_a: dict,
     return out
 
 
+def describe_objects(changes: list[dict]) -> str:
+    """Plain-language summary of objects.json, with positions in the floor frame (metres)."""
+    lines = ["# Object changes", "",
+             "Positions are metres in the floor frame (x, y, z up). Labels are YOLO class names; "
+             "no colour or appearance is used.", ""]
+    for kind in ("moved", "removed", "added"):
+        for c in (c for c in changes if c["kind"] == kind):
+            if kind == "moved":
+                lines.append(f"- moved {c['cls']}: {c['displacement_m']:.2f} m "
+                             f"(vertical {c['vertical_m']:+.2f} m), from {c['before_xyz']} to {c['after_xyz']}.")
+            elif kind == "removed":
+                lines.append(f"- removed {c['cls']}: last seen at {c['before_xyz']}; the spot is empty in the after capture.")
+            else:
+                lines.append(f"- added {c['cls']}: seen at {c['after_xyz']}; the spot is empty in the before capture.")
+    n_stay = sum(c["kind"] == "stayed" for c in changes)
+    lines += ["", f"Stayed (matched, under the stay threshold): {n_stay}.", "", "## Unconfirmed", "",
+              "These could not be confirmed as changes. They are listed for review only.", ""]
+    for c in (c for c in changes if c["kind"] == "unconfirmed"):
+        if c["side"] == "matched pair":
+            why = f"candidate move, old spot {c['old_spot']['status']}, new spot {c['new_spot']['status']}"
+        else:
+            key = "spot_in_after" if c["side"] == "before only" else "spot_in_before"
+            why = f"spot {c[key]['status']} in the other capture"
+        lines.append(f"- {c['cls']} ({c['side']}): {why}.")
+    return "\n".join(lines) + "\n"
+
+
 def side_objects(recon: dict, files: list[Path], model, device, args) -> list[dict]:
     obs = observations(recon, files, model, device, args.min_conf)
     return cluster(obs, args.merge, args.min_frames), len(obs)
@@ -245,7 +301,10 @@ def main() -> int:
     ap.add_argument("--after-recon", type=Path, required=True)
     ap.add_argument("--after-frames", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--model", type=Path, default=MODEL)
+    ap.add_argument("--detector", choices=["yolo", "yolo-world"], default="yolo",
+                    help="yolo: COCO classes (80). yolo-world: open vocabulary, prompts in ROOM_VOCAB")
+    ap.add_argument("--model", type=Path, default=None,
+                    help="weights; default models/yolov8n.pt, or models/yolov8s-worldv2.pt for yolo-world")
     ap.add_argument("--max-frames", type=int, default=40)
     ap.add_argument("--min-conf", type=float, default=0.3, help="YOLO confidence cut-off")
     ap.add_argument("--merge", type=float, default=0.3, help="metres: observations closer than this are one object")
@@ -255,12 +314,17 @@ def main() -> int:
     ap.add_argument("--margin", type=float, default=0.15, help="metres: depth gap that counts as empty space")
     ap.add_argument("--radius", type=float, default=0.4, help="metres: a surface this far in front of a spot hides it")
     ap.add_argument("--min-votes", type=int, default=2, help="frames that must see a spot as empty")
+    ap.add_argument("--footprint", type=float, default=0.15, help="metres: radius of the footprint ring around each object centre")
     args = ap.parse_args()
 
     import torch
-    from ultralytics import YOLO
+    from ultralytics import YOLO, YOLOWorld
     device = 0 if torch.cuda.is_available() else "cpu"
-    model = YOLO(str(args.model))
+    if args.detector == "yolo-world":
+        model = YOLOWorld(str(args.model or WORLD_MODEL))
+        model.set_classes(ROOM_VOCAB)
+    else:
+        model = YOLO(str(args.model or MODEL))
 
     rec_b = dict(np.load(args.before_recon))
     rec_a = dict(np.load(args.after_recon))
@@ -271,6 +335,7 @@ def main() -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "objects.json").write_text(json.dumps(changes, indent=2))
+    (args.out / "objects.md").write_text(describe_objects(changes))
     kinds = ("stayed", "moved", "removed", "added", "unconfirmed")
     counts = {k: sum(c["kind"] == k for c in changes) for k in kinds}
     print(f"objects: before {len(before)} (from {n_b} YOLO hits), after {len(after)} (from {n_a}) -> {counts}")

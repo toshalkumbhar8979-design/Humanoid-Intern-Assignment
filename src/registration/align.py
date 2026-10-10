@@ -151,9 +151,34 @@ def _gravity_inits(points_before: np.ndarray, points_after: np.ndarray,
     return inits
 
 
+def _colored_refine(pts_a: np.ndarray, col_a: np.ndarray, pts_b: np.ndarray, col_b: np.ndarray,
+                    T: np.ndarray, voxel: float) -> np.ndarray:
+    """Colour-aware ICP refinement (Park, Zhou, Koltun, ICCV 2017), multi-scale as in the Open3D tutorial.
+
+    The colour term locks the tangential direction that point-to-plane ICP can slide along on a flat floor.
+    Colours must be in [0, 1].
+    """
+    src = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts_a))
+    src.colors = o3d.utility.Vector3dVector(np.clip(col_a, 0, 1).astype(np.float64))
+    tgt = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts_b))
+    tgt.colors = o3d.utility.Vector3dVector(np.clip(col_b, 0, 1).astype(np.float64))
+    for radius, iters in ((voxel, 50), (voxel / 2, 30), (voxel / 4, 14)):
+        s = src.voxel_down_sample(radius)
+        t = tgt.voxel_down_sample(radius)
+        s.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius * 2, max_nn=30))
+        t.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius * 2, max_nn=30))
+        r = o3d.pipelines.registration.registration_colored_icp(
+            s, t, radius, T, o3d.pipelines.registration.TransformationEstimationForColoredICP(),
+            o3d.pipelines.registration.ICPConvergenceCriteria(relative_fitness=1e-6, relative_rmse=1e-6,
+                                                              max_iteration=iters))
+        T = r.transformation
+    return T
+
+
 def align(points_before: np.ndarray, points_after: np.ndarray, voxel: float = 0.04,
           trim_quantile: float = 0.85, up_before: np.ndarray | None = None,
-          up_after: np.ndarray | None = None) -> AlignResult:
+          up_after: np.ndarray | None = None, colors_before: np.ndarray | None = None,
+          colors_after: np.ndarray | None = None, use_color: bool = False) -> AlignResult:
     src, tgt = _to_pcd(points_after, voxel), _to_pcd(points_before, voxel)
 
     # FPFH + RANSAC (global, no prior)
@@ -188,6 +213,10 @@ def align(points_before: np.ndarray, points_after: np.ndarray, voxel: float = 0.
     keep = d <= np.quantile(d, trim_quantile)
     trimmed = _to_pcd(points_after[keep], voxel)
     final = _icp(trimmed, tgt, voxel * 0.8, best_T, 60).transformation
+
+    # optional colour refinement on the full clouds (off by default; see DESIGN.md for the measurement)
+    if use_color and colors_before is not None and colors_after is not None:
+        final = _colored_refine(points_after, colors_after, points_before, colors_before, final, voxel)
 
     ev = o3d.pipelines.registration.evaluate_registration(src, tgt, voxel * 1.0, final)
     return AlignResult(T=final, fitness=float(ev.fitness), inlier_rmse=float(ev.inlier_rmse),

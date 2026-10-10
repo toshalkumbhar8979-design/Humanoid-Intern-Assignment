@@ -14,6 +14,10 @@ optional path for visualisation.
 
 Trade-off: MASt3R's weights are CC BY-NC-SA, so the project is non-commercial.
 
+Memory: a 60-frame reconstruction fits in the 8 GB of the RTX 5050. I sampled `nvidia-smi` every 3 s during the
+run: the peak was 7,896 MiB of 8,151 MiB, and the run finished with exit 0. That is a reconstruction-only
+measurement, with about 255 MiB to spare, so the full pipeline at 60 frames is not measured yet.
+
 ## 2. Alignment: gravity prior, yaw sweep, then ICP
 
 Two captures have arbitrary relative poses. FPFH+RANSAC alone gave a symmetric wrong solution (180 deg,
@@ -25,10 +29,20 @@ fitness 0.65) on the synthetic room, because the flat floor repeats itself.
 3. **ICP from every candidate** (point-to-plane). I keep the best by fitness, then inlier RMSE.
 4. **Trimmed refinement.** I drop the worst 15% of residuals and refit, so moved objects do not pull the
    static background.
+5. **Colour refinement (opt-in, `align.py --color`).** A colour-aware ICP (Park, Zhou and Koltun, ICCV 2017, as
+   implemented in Open3D) runs after step 4 at three voxel scales. The colour term locks the sliding direction
+   that point-to-plane ICP cannot see on a flat floor (see `research.md`, section 1).
 
-On the synthetic pair with a known 25-degree yaw and 0.4 m shift, the method recovers the transform to 2.4 deg
-and 4.4 cm. My target was 2 deg and 5 cm. I did not reach 2 deg because the flat, feature-poor floor lets ICP slide.
-A voxel size of 0.025 m was much worse (17-31 deg), and trimming made no measurable difference here.
+**Measured effect of colour refinement:**
+
+| Pair | Without colour | With colour |
+|---|---|---|
+| Synthetic, known 25 deg / 0.4 m perturbation | 2.41 deg, 4.4 cm, fitness 0.658 | 1.13 deg, 2.1 cm, fitness 0.678 |
+| Real clips, before to after | fitness 0.653, inlier RMSE 2.19 cm | fitness 0.625, inlier RMSE 2.14 cm |
+
+On the synthetic pair the colour step reaches the 2 deg / 5 cm target, which point-to-plane alone did not. On my
+real clips the change is mixed: RMSE drops by half a millimetre and fitness drops by 0.03. So I kept colour
+refinement off by default. I have one synthetic case and one real pair, so this is not enough to enable it.
 
 On my real clips the alignment fitness is 0.65 (before to after) and 0.53 (control to before), with inlier RMSE
 of 2.2-2.4 cm. I have no ground-truth transform for my clips, so those numbers cannot show accuracy.
@@ -69,80 +83,94 @@ only fit the noise. The voxel detector stays at its default (5 cm, tolerance 2),
 renderer, so the surfaces agree to a fraction of a voxel and the detector separates the four changes cleanly.
 Real phone captures do not agree at that level.
 
-## 4. Object-level changes (YOLO + 3D + visibility check)
+## 4. Object-level changes (YOLO + 3D + footprint visibility check)
 
 Object detection avoids the voxel problem. A moved chair's centre moves by about a metre, while surface noise
 is a few centimetres, so comparing object centres is much more robust than comparing surface shells.
 
 **Method (`scripts/detect_objects.py`).**
 
-- YOLOv8n (ultralytics, COCO classes) runs on each of the reconstructed frames (40 per capture, the same frames
-  as the pointmaps).
+- The detector runs on each of the reconstructed frames (40 per capture, the same frames as the pointmaps).
+  Two detectors are available:
+  - `--detector yolo`: YOLOv8n with the 80 COCO classes.
+  - `--detector yolo-world` (used by `run_all.py`): YOLO-World (`yolov8s-worldv2`) with an open vocabulary of
+    30 room-object names (`ROOM_VOCAB`). I fixed the list before looking at any result. On the first 40 real
+    before-frames it finds 20 classes at confidence 0.3 or higher, including desk, laptop, mouse, backpack,
+    mug and pillow, which COCO cannot name.
 - Each box's central 40% is looked up in that frame's pointmap, using the points above the frame's median
   confidence. The median of those points is the object's 3D position in the shared floor frame, in metres.
 - Observations of the same class within 0.3 m are merged into one object per capture. An object must appear in
   at least 3 frames.
 - Same-class objects are matched across captures by Hungarian assignment on 3D distance. A match under 0.3 m is
   **stayed**; 0.3-4 m is a candidate **moved**.
-- **Visibility check.** Each unmatched object, and the old and new spot of each candidate move, is projected into
-  every frame of the other capture. The projection uses that frame's pose and focal length. I checked the convention
-  by projecting each frame's own pointmap back onto its pixel grid: the median error is 0 px on the frames I tested.
-  At the projected pixel, the other capture's depth decides the vote:
-  - **empty**: the surface is behind the spot by more than 0.15 m, so the ray reaches the spot in free space;
-  - **occupied**: a surface sits within 0.4 m in front of the spot, up to 0.15 m behind it;
-  - **hidden**: a surface lies more than 0.4 m in front, so the spot cannot be seen.
-- A spot is **empty** when at least 2 frames vote empty and none vote occupied. An unmatched before object is
-  **removed** only if its spot is empty in the after capture; an unmatched after object is **added** only if its
-  spot is empty in the before capture. A candidate move is **moved** only if both its old and new spots are empty.
-- Everything else is **unconfirmed**. It is kept in the output for review and is not counted as a change.
+- **Footprint visibility check.** Each unmatched object, and the old and new spot of each candidate move, is tested
+  at 9 points: the centre and 8 points on a 0.15 m ring at the same height. Each point is projected into every frame
+  of the other capture, using that frame's pose and focal length. I checked the projection by reprojecting each
+  frame's own pointmap onto its pixel grid: the median error is 0 px on the frames I tested. At the projected
+  pixel, the other capture's depth decides the vote:
+  - **empty**: the surface is behind the point by more than 0.15 m, so the ray reaches the point in free space;
+  - **occupied**: a surface sits within 0.4 m in front of the point, or up to 0.15 m behind it;
+  - **hidden**: a surface lies more than 0.4 m in front, so the point cannot be seen.
+- A point is empty when at least 2 frames vote empty and none vote occupied. A spot is **empty** when at least two
+  thirds of its voting sample points are empty, and **occupied** when at least one third are occupied.
+- An unmatched before object is **removed** only if its spot is empty in the after capture; an unmatched after
+  object is **added** only if its spot is empty in the before capture. A candidate move is **moved** only if both
+  its old and new spots are empty.
+- Everything else is **unconfirmed**. It is kept in the output with its reason, and it is not counted as a change.
+- Outputs: `objects.json` (one record per object, with `kind`, positions and the votes) and `objects.md`
+  (plain-language list, generated from `objects.json`).
 
 **Null check.** I run the same stage with the no-change control as the "after" side. Every object should come out
 as stayed or unconfirmed. Any moved, removed or added result is a false alarm.
 
-**Results on my clips (min 3 frames, visibility check on):**
+**Results on my clips (min 3 frames):**
 
-| | Stayed | Moved | Removed | Added | Unconfirmed |
+| Run | Stayed | Moved | Removed | Added | Unconfirmed |
 |---|---|---|---|---|---|
-| Real pair | 6 | 0 | 0 | 0 | 6 |
-| Null (control) | 6 | 0 | 1 (chair) | 0 | 3 |
+| Real pair, COCO, centre point test (first visibility version) | 6 | 0 | 0 | 0 | 6 |
+| Real pair, COCO, footprint test | 6 | 0 | 0 | 0 | 6 |
+| Real pair, YOLO-World, footprint test | 7 | 0 | 0 | 0 | 12 |
+| Control, COCO, footprint test | 6 | 0 | 0 | 0 | 4 |
+| Control, YOLO-World, footprint test | 10 | 0 | 0 | 0 | 6 |
 
-Before the visibility check, the same stage reported 1 moved, 4 added and 1 removed on the real pair, and
-4 added/removed on the null. The check removed the null false alarms from 4 to 1, and moved the real-pair events
-into the unconfirmed list. So the real-pair events are no longer reported as changes, because I could not confirm them.
+Before the visibility check, the COCO stage reported 1 moved, 4 added and 1 removed on the real pair, and 4
+added/removed on the control. The footprint check removes every false alarm on the control, in both detectors,
+and it confirms no change on the real pair. I count that as the honest result. The control is one run, so
+"zero false alarms" is measured on one unchanged scene only.
 
-The remaining real-pair cases, and why each stayed unconfirmed:
+The remaining real-pair cases, with the YOLO-World run:
 
-- **Bed** (candidate move, 0.36 m, 35 cm vertical): its new spot was occupied in the before capture (2 frames).
-  This fits a mismatch rather than a move.
-- **Backpack** (before only): visible in only 2 of 10 sampled after frames. In those frames a surface sits 4 cm
-  behind its centre, so the spot is occupied by something else (probably a supporting surface or wall).
-- **Cup, person** (after only): their spots are occupied in the before capture (8 and 7 frames).
-- **Laptop, suitcase** (after only): their spots are not visible in the before capture at all.
+- **Bed** (candidate move, 0.36 m, 35 cm vertical): its old and new spots are both occupied. This fits a mismatch
+  rather than a move. A bed also appears as a before-only object at its own spot.
+- **Backpack, cup, phone, refrigerator, bag, bottle, chair, mug, pillow (2)**: each spot is occupied in the other
+  capture, or not in view there. `objects.md` lists the reason for each.
 
-The chair false alarm on the null is the clearest weakness. The control's reconstruction has no surface where
-the chair stood, in all 4 frames that see that spot. Either the chair was not reconstructed in the control, or
-the chair is too thin or dark for the depth to pick it up. An empty spot only shows the other reconstruction has
-nothing there; it does not show the space is actually free. A point test of the object's centre cannot tell these apart.
+**Scoring objects.** `evaluate_changes.py --objects` maps `objects.json` to the scorer's schema. Only confirmed
+`moved`, `added` and `removed` records count as detections; `stayed` and `unconfirmed` do not. There are 9 unit tests
+(passing), including one for the object mapping. On the real clips the scorer has no real ground truth to score
+against yet. That needs the author's list of changes.
 
 **Why it can still fail.**
 
-- YOLOv8n has COCO classes only. Objects outside the 80 classes are not seen at all.
+- YOLO-World only finds the 30 prompts in `ROOM_VOCAB`. An object with another name is missed, and I have not
+  tested prompts beyond that list.
 - Box centres on thin or occluded objects can land on background, which biases the 3D position.
-- The visibility test checks one point (the centre). It cannot see an object that sits on or against a surface,
-  so the spot is often occupied by its own support.
+- The footprint is a horizontal ring at the object's centre height. It does not cover an object's full height,
+  so a tall object standing on a surface can still be judged by its support.
 - Only 40 pointmaps per capture exist, so an object seen in few frames has little evidence.
 
 ## 5. Semantics and language
 
-For each voxel region, the box is projected into its best-view camera. That crop is labelled by OWLv2 (open
-vocabulary, over a room-object list). The colour name comes from the mean surface colour of the change. The
+**Voxel regions.** For each region, the box is projected into its best-view camera. That crop is labelled by OWLv2
+(open vocabulary, over a room-object list). The colour name comes from the mean surface colour of the change. The
 sentence template uses metric size and displacement, plus a left/right and toward/away phrase from the camera's
-viewpoint.
+viewpoint. On the synthetic scene OWLv2 returned no label for the chair and labelled the box "laptop" at 0.15
+confidence. Both are expected at 128x72 resolution. I have not validated OWLv2 labels on real footage, and my real
+clips produced no voxel regions, so `descriptions/changes.md` is empty for the real pair.
 
-On the synthetic scene OWLv2 returned no label for the chair and labelled the box "laptop" at 0.15 confidence.
-Both are expected at 128x72 resolution. I have not validated labels on real footage. My real clips produced no
-voxel regions and no confirmed object changes, so there is nothing to describe yet. `descriptions/changes.md`
-is empty for the real pair. That is the honest result, not a bug in the template.
+**Object changes.** `objects.md` describes each moved, added and removed object in metres in the floor frame, and
+lists every unconfirmed object with the reason it stayed unconfirmed. It does not use appearance or colour. The
+object labels are YOLO class names. On the real pair it lists no confirmed change, only the unconfirmed ones.
 
 ## 6. Visualisation, graphs, floor and scoring
 
@@ -173,60 +201,59 @@ a type (added, removed or moved). Positions are optional. Without them, an entry
 that type, so I only need the type of each change I made. With positions, a detection must lie within a tolerance
 (0.5 m by default) of every given position. Matching is greedy and one-to-one.
 
-- Unit tests (`tests/test_evaluate_changes.py`): 8/8 pass.
-- End to end on synthetic detections: 4/4 matched at 0.00-0.11 m.
-- The `--frame floor` mode runs but is not checked against ground truth.
-- The scorer reads voxel-region output (`changes.json`). The object output (`objects/objects.json`) has its own
-  format, and I have not added a scorer for it yet.
+- Unit tests (`tests/test_evaluate_changes.py`): 9/9 pass, including the object mapping.
+- End to end on synthetic detections: 4/4 matched at 0.00-0.11 m (raw frame).
+- `--frame floor` runs, but I have not checked it. The synthetic ground truth is stored in the raw frame, and I do
+  not have ground truth in the floor frame, so this check cannot run yet.
 
 ## 7. What the pipeline produces, and what it does not yet
 
 The submission plan asks for three things: a shared 3D representation, moved/added/removed regions shown in 3D,
-and a language description of each change. Here is where I stand on each:
+and a language description of each change.
 
 | Required output | Produced | Status on my real clips |
 |---|---|---|
 | Shared 3D representation | `reconstructions/*.npz`, `*.ply`, aligned to the floor frame | Produced. Alignment fitness 0.65, inlier RMSE 2.2-2.4 cm. |
 | Changes visualised in 3D | `visualizations/viewer.html`, `bev.png` | Produced for voxel regions only; the real pair has none. Object changes are not drawn yet. |
-| Changes described in language | `descriptions/changes.md`, `changes.json` | Empty on the real pair. The object stage has no description step yet. |
-| Object-level changes | `objects/objects.json`, `objects_null/objects.json` | Produced. 0 confirmed changes on the real pair, 1 false alarm on the null. |
+| Changes described in language | `descriptions/changes.md`, `objects.md` | `changes.md` is empty on the real pair. `objects.md` lists only unconfirmed objects there. |
+| Object-level changes | `objects/objects.json`, `objects_null/objects.json` | Produced. 0 confirmed changes on the real pair; 0 false alarms on the control. |
 
 ## 8. Limitations: status
+
+Status values: **Fixed** (a test or a measurement in the note), **Partly fixed**, **Open**, **By design**.
 
 | Item | Status | Note |
 |---|---|---|
 | Voxel regions find 0 changes on my clips | **Open** | Control noise is at least as large as the real candidates at every voxel size and tolerance swept (section 3). |
-| Object method has false alarms on an unchanged scene | **Partly fixed** | The visibility check cut the null from 4 false alarms to 1 (chair, 4 of 4 frames empty). Section 4. |
-| Real-pair object changes not confirmed | **Open** | 0 confirmed on the real pair; 6 unconfirmed, each with its reason in section 4. |
-| Point test on the object centre | **Open** | Cannot tell an empty spot from a spot the other reconstruction missed, and cannot see objects sitting on a surface. Next step: test the object's footprint. |
-| Bed "move" (0.36 m) has a 35 cm vertical jump | **Open** | Now unconfirmed. Probably a mismatch, not a real move. |
+| Object method has false alarms on an unchanged scene | **Partly fixed** | Footprint check plus YOLO-World: 0 false alarms on the control, COCO and YOLO-World. One control only. |
+| Real-pair object changes not confirmed | **Open** | 0 confirmed on the real pair (YOLO-World); 12 unconfirmed, each with its reason in `objects.md`. |
+| Point test on the object centre | **Fixed** | Replaced by a 9-point footprint test (section 4). Measured on the real pair and the control. |
+| Bed "move" (0.36 m) has a 35 cm vertical jump | **Open** | Unconfirmed. Probably a mismatch, not a real move. |
 | Floor residual (about 19% of points below the floor) | **Open** | Stability improved, residual not reduced. Likely depth warp. |
 | Floor normal unstable across RANSAC runs (4-16 deg) | **Partly fixed** | Least-squares refit and median of five runs: five of six within about 1 deg; one run still about 10 deg off. |
-| No way to score detections against what I changed | **Partly fixed** | `evaluate_changes.py` works for voxel output (tested on synthetic data). Object output has no scorer yet. |
+| No way to score detections against what I changed | **Partly fixed** | `evaluate_changes.py` scores voxel output and, with `--objects`, object output (9 unit tests). Real scoring needs the author's list of changes. |
 | No graphs | **Fixed** | `make_graphs.py` writes three PNGs; checked through numbers only. |
-| Object-level detection did not exist | **Fixed (experimental)** | `detect_objects.py` runs in `run_all`, with the visibility check and a null check. |
+| Object-level detection did not exist | **Fixed (experimental)** | `detect_objects.py` runs in `run_all`, with the footprint check and a null check. |
 | Repository not on GitHub; submodule state dirty | **Fixed** | Pushed. MASt3R, DUSt3R and CroCo are pinned submodules, and a fresh recursive clone works. Each run regenerates `__pycache__` in the submodules; set `PYTHONDONTWRITEBYTECODE=1` to avoid it. |
-| `--frame floor` scoring mode unchecked | **Open** | Runs, not compared with ground truth. |
-| Descriptions file is empty on the real pair | **Open** | No confirmed voxel region or object change to describe. |
-| Registration error about 2.4 deg / 4 cm on the synthetic pair | **Open** | Colour-ICP or a learned matcher is needed to reach 2 deg. |
-| Objects under 50 voxels are dropped | **Open** | Reconstruction noise on my clips (up to 90 voxels) is larger than that cut-off. |
-| YOLO COCO classes only | **Open** | Objects outside the 80 classes are missed. |
+| `--frame floor` scoring mode unchecked | **Open** | Runs, but needs ground truth in the floor frame, which I do not have. |
+| Descriptions file is empty on the real pair | **Partly fixed** | Object descriptions (`objects.md`) are written. No confirmed change exists on the real pair, so `changes.md` stays empty. |
+| Registration error about 2.4 deg / 4 cm on the synthetic pair | **Partly fixed** | Colour refinement reaches 1.13 deg / 2.1 cm on the synthetic pair (target met). It is opt-in, and on the real pair the effect is mixed. |
+| Objects under 50 voxels are dropped | **Open** | Reconstruction noise on my clips (up to 90 voxels) is larger than that cut-off. The control sets the cut-off automatically; I have not changed the rule. |
+| YOLO COCO classes only | **Partly fixed** | YOLO-World with a 30-name room vocabulary (`--detector yolo-world`, used by `run_all`). Only those 30 names are tested. |
 | Labels (OWLv2) not validated on real footage | **Open** | Validated only on the synthetic scene, at low resolution. |
 | Occlusion handled only by the 'seen' count and the hidden vote | **Partly fixed** | Hidden spots give no vote; a spot seen from one frame still scores low. |
-| 60-frame reconstruction exceeds 8 GB VRAM | **Open** | I use a 40-frame cap. |
-| Only one pair of captures | **Open** | No repeat capture, so repeatability is untested beyond the control. |
+| 60-frame reconstruction exceeds 8 GB VRAM | **Fixed** | Measured: 60 frames fit, peak 7,896 MiB of 8,151 MiB (reconstruction only). The full pipeline at 60 frames is not measured. |
+| Only one pair of captures | **Open** | Needs a new recording from the author. |
 | Symmetric or flat scenes can flip the alignment | **Partly fixed** | Gravity prior and yaw sweep fix the case I tested. Other scenes are untested. |
 | Synthetic clip artefacts (black bands) | **Open** | Synthetic clips are used only for geometry checks, not for a full run. |
 | MASt3R weights CC BY-NC-SA; YOLOv8 AGPL-3.0 | **By design** | Project is non-commercial. |
-| Raw clips and reconstructions are not in the repo | **By design** | `data/` and `outputs/` are git-ignored. |
+| Raw clips and reconstructions are not in the repo | **By design** | `data/`, `outputs/`, `models/` and `weights/` are git-ignored. |
 
 ## 9. Next steps
 
 1. Score the object output and the voxel output against the changes I made on my clips, with `evaluate_changes.py`.
    I need the type and rough place of each change for that.
-2. Replace the centre point test with a footprint test: sample the object's extent, not only its centre, before
-   calling its spot empty or occupied.
-3. Add a scorer for the object output, so the object method can be compared with ground truth too.
-4. Add a description step for object changes, so the object output also gets a language description.
-5. Record a second pair of captures with no changes, to measure repeatability beyond the control.
-6. Colour-ICP refinement to reach the 2 deg target on feature-poor scenes.
+2. Run the full `run_all.py` once with the YOLO-World object stage, and record the run time.
+3. Validate OWLv2 labels on real crops from the YOLO-World detections.
+4. Record a second pair of captures with no changes, to measure repeatability beyond the control.
+5. Measure the floor-frame scoring mode with ground truth in the floor frame.

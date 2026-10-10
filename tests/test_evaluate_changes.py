@@ -65,6 +65,21 @@ def test_moved_needs_both_positions_within_tolerance():
     assert ev.distance(bad_after, truth[0], 0.5) is None
 
 
+def test_object_adapter_keeps_only_confirmed_changes():
+    objs = [
+        {"kind": "stayed", "cls": "chair", "before_xyz": [0, 0, 0], "after_xyz": [0, 0, 0]},
+        {"kind": "unconfirmed", "cls": "cup", "before_xyz": None, "after_xyz": [1, 1, 0]},
+        {"kind": "removed", "cls": "backpack", "before_xyz": [1.0, 2.0, 0.4], "after_xyz": None},
+        {"kind": "moved", "cls": "bed", "before_xyz": [0, 0, 0], "after_xyz": [2.0, 0.0, 0]},
+    ]
+    dets = ev.objects_to_detections(objs)
+    assert [d["kind"] for d in dets] == ["removed", "moved"]
+    assert dets[0]["centroid_before"] == [1.0, 2.0, 0.4] and dets[0]["centroid_after"] is None
+    truth = [{"type": "removed", "before_xy": [1.0, 2.0]}, {"type": "moved", "before_xy": [0, 0], "after_xy": [2, 0]}]
+    r = ev.score(dets, truth, tol=0.5)
+    assert (r["tp"], r["fp"], r["fn"]) == (2, 0, 0)
+
+
 def test_synthetic_ground_truth_loads_and_is_well_formed():
     import json
     gt = json.loads((ROOT / "data" / "synthetic" / "ground_truth.json").read_text())["changes"]
