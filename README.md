@@ -75,6 +75,18 @@ Follow the challenge brief (plan section 3):
 3. Walk around the same volume from different viewpoints, with good overlap. Move smoothly, avoid
    backlight, and prefer 1080p at 30 fps in landscape.
 
+## Scoring against ground truth
+
+Write down what you changed in `data/real_ground_truth.template.json` (copy it and fill in the entries). Then:
+
+```bash
+python scripts/evaluate_changes.py outputs/change_maps/changes.json my_truth.json
+```
+
+It prints each match, miss and false alarm, then precision and recall. Positions are optional. Leave them
+out to score by change type only. `--frame floor --before outputs/reconstructions/before.npz` scores in the
+bird's-eye frame; that mode has not been checked against ground truth yet.
+
 ## Verification status
 
 | Check | Result |
@@ -84,6 +96,7 @@ Follow the challenge brief (plan section 3):
 | Change detection vs. synthetic ground truth (4 changes) | 4/4 correct kinds; moved distances 1.2 m / 0.9 m (GT 1.2 / 0.8); added and removed regions sit at the right objects and are object-sized |
 | CLI scripts (`detect_changes`, `describe_changes --no-labeler`, `visualize`) | run on the synthetic outputs |
 | OWLv2 labeler | runs on GPU; labels are unreliable on the low-resolution synthetic crops |
+| Scoring against ground truth (`evaluate_changes.py`) | 8/8 unit tests pass; on synthetic detections 4/4 matched at 0.00-0.11 m |
 | Full pipeline on real phone videos | runs end to end (`run_all.py`, exit 0) on the user's two clips; **detects no changes above the noise floor**, so the real-footage result is unresolved (see DESIGN.md section 3) |
 | No-change control on the real footage | an independent reconstruction of the same unchanged room gives 17 false regions, the largest 91 voxels; the real pair produces no region larger than that |
 
