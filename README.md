@@ -58,8 +58,7 @@ git clone --depth 1 https://github.com/naver/mast3r.git third_party/mast3r   # M
 ```
 
 Model weights are downloaded on first use: MASt3R metric ViT-L and OWLv2 from Hugging Face, and YOLOv8n from
-ultralytics into `models/` (git-ignored). Conda users can run `conda env create -f environment.yml` and then the
-same `pip` steps for torch and MASt3R.
+ultralytics into `models/` (git-ignored).With Conda, run `conda env create -f environment.yml` and then the same `pip` steps for torch and MASt3R.
 
 ## Reproduce
 
