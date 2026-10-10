@@ -98,12 +98,16 @@ was missing or too small) and labelled the box "laptop" at 0.15 confidence. Both
 
 - **Bird's-eye map** (`bev.png`): the room is rotated so the floor is horizontal (z up) using the
   plane fit above. Changes are shown as coloured point sets with convex-hull footprints, and labelled.
-- **Floor choice.** `estimate_up` now fits the top six planes and keeps the horizontal ones (normal within
+- **Floor choice.** `estimate_up` fits the top six planes and keeps the horizontal ones (normal within
   53 deg of camera 0's y axis). The lowest of those is the floor. The largest plane was previously used and
-  was often a desk or wall. Diagnostics show the chosen plane is the lowest horizontal candidate, but about
-  18% of before-capture points still lie more than 5 cm below it (1st percentile -0.25 m). Those points
-  are off every plane, so the cause is depth noise or non-planar warp across the room. This residual is
-  not fixed, and the bird's-eye heights should be read with that in mind.
+  was often a desk or wall. Each chosen plane is refined by least squares over all remaining points, and the
+  result is the median of five RANSAC runs. Plain RANSAC gave a 4-16 deg spread on the same points; the
+  median brings five of six runs within about 1 deg, with one run still 10 deg off.
+- **Floor residual, not fixed.** About 19% of before-capture points still lie below the fitted floor (0.0
+  threshold), and the share depends on which points are kept. Keeping only the top 15% by confidence, about
+  5% lie more than 5 cm below the floor. The floor normal also moves by about 15-25 deg as the
+  confidence cut changes, so the floor itself is not well determined on these reconstructions. The cause
+  is depth noise or non-planar warp, not a wrong plane choice. The bird's-eye heights stay approximate.
 - **Interactive viewer** (`viewer.html`): plotly 3D, with colour point clouds and toggleable change
   regions with bounding boxes. It runs offline.
 - Not implemented: an orbit GIF and novel-view rendering of the change overlay.
@@ -121,7 +125,7 @@ was missing or too small) and labelled the box "laptop" at 0.15 confidence. Both
   reconstruction noise (up to 91 voxels) is larger than that, so the real changes are not separable yet.
 - **Labels** depend on crop resolution. Phone footage at 1080p should help. Labels are per region from one
   view, so I'd add voting across several views next.
-- **Floor frame residual.** About 18% of points lie below the fitted floor (see section 5). Height-based
+- **Floor frame residual.** About 19% of points lie below the fitted floor (see section 5). Height-based
   readings from the bird's-eye view are therefore approximate.
 - **Occlusion** is handled only by the 'seen' count in the confidence. A region seen from only one camera
   scores lower but is still reported.

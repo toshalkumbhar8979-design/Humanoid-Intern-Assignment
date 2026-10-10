@@ -36,14 +36,35 @@ class AlignResult:
                 "trimmed_fraction": round(self.trimmed_fraction, 3)}
 
 
-def estimate_up(points: np.ndarray, cam0_c2w: np.ndarray, seed: int = 0, n_planes: int = 6,
-                min_frac: float = 0.02, horizontal_cos: float = 0.6):
-    """Unit 'up' vector and floor offset for one reconstruction.
+def _refine_plane(seed_pts: np.ndarray, all_pts: np.ndarray, n0: np.ndarray, thr: float = 0.03,
+                  iters: int = 4):
+    """Least-squares refit of a plane seeded by RANSAC inliers.
+
+    RANSAC on a noisy cloud lands on a slightly different plane each run (4-16 deg spread on the same
+    points), so each refinement step re-collects every point within `thr` of the current plane and refits
+    its normal by SVD. Returns (unit normal, refined inlier points).
+    """
+    n = n0 / np.linalg.norm(n0)
+    c = seed_pts.mean(0)
+    inl = seed_pts
+    for _ in range(iters):
+        near = all_pts[np.abs((all_pts - c) @ n) < thr]
+        if len(near) < 3:
+            break
+        inl = near
+        c = inl.mean(0)
+        _, _, vt = np.linalg.svd(inl - c, full_matrices=False)
+        n = vt[-1]
+    return n, inl
+
+
+def _estimate_up_once(points: np.ndarray, cam0_c2w: np.ndarray, n_planes: int = 6,
+                      min_frac: float = 0.02, horizontal_cos: float = 0.6):
+    """One RANSAC pass: returns (up, floor_offset, floor_inlier_points).
 
     The floor is not always the largest plane: walls and desk faces can have more points. So we fit the
     top few planes and keep the horizontal ones (normal within ~53 deg of camera 0's y axis, which points
     down in a level phone capture). Among those, the floor is the lowest. 'up' opposes y_cam.
-    floor_offset is the median of the floor inliers projected on 'up'.
     """
     pts = points.astype(np.float64)
     pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts))
@@ -62,11 +83,12 @@ def estimate_up(points: np.ndarray, cam0_c2w: np.ndarray, seed: int = 0, n_plane
         n = np.asarray(plane[:3], dtype=np.float64)
         n /= np.linalg.norm(n)
         if abs(n @ y_cam) >= horizontal_cos:
+            seed_pts = np.asarray(rest.select_by_index(inliers).points)
+            n, inl = _refine_plane(seed_pts, np.asarray(rest.points), n)
             up = -n if n @ y_cam > 0 else n
-            inl = np.asarray(rest.select_by_index(inliers).points)
             h = float(np.median(inl @ up))
             if best is None or h < best[0]:
-                best = (h, up, h)
+                best = (h, up, h, inl)
         rest = rest.select_by_index(inliers, invert=True)
 
     if best is None:  # no horizontal plane found: fall back to the largest plane
@@ -75,8 +97,24 @@ def estimate_up(points: np.ndarray, cam0_c2w: np.ndarray, seed: int = 0, n_plane
         n /= np.linalg.norm(n)
         up = -n if n @ y_cam > 0 else n
         inl = np.asarray(pcd.select_by_index(inliers).points)
-        return up, float(np.median(inl @ up))
-    return best[1], best[2]
+        return up, float(np.median(inl @ up)), inl
+    return best[1], best[2], best[3]
+
+
+def estimate_up(points: np.ndarray, cam0_c2w: np.ndarray, runs: int = 5, **kwargs):
+    """Unit 'up' vector and floor offset for one reconstruction, robust to RANSAC randomness.
+
+    RANSAC picks a slightly different floor on each run (4-16 deg spread on the same points), so we take
+    the coordinate-wise median of `runs` passes (after sign alignment) and recompute the offset from the
+    pooled floor inliers along that 'up'.
+    """
+    results = [_estimate_up_once(points, cam0_c2w, **kwargs) for _ in range(runs)]
+    ref = results[0][0]
+    ups = np.array([u if u @ ref >= 0 else -u for u, _, _ in results])
+    up = np.median(ups, axis=0)
+    up /= np.linalg.norm(up)
+    pooled = np.concatenate([inl for _, _, inl in results])
+    return up, float(np.median(pooled @ up))
 
 
 def _to_pcd(pts: np.ndarray, voxel: float) -> o3d.geometry.PointCloud:
