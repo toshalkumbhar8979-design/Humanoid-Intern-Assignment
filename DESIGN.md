@@ -37,6 +37,10 @@ the transform to 2.4 deg and 4.4 cm. The target was 2 deg and 5 cm. I did not re
 the room is a large flat floor with few features, so ICP can slide along it. I tried voxel 0.025 m,
 which was much worse (17-31 deg). Trimming made no measurable difference here.
 
+On the real pair, alignment fitness is 0.65 for before-to-after and 0.53 for control-to-before, with
+inlier RMSE about 2.2-2.4 cm. The 2.4 deg error is the synthetic figure; I have no ground-truth
+transform for the real clips.
+
 Next step to close the gap: colour-ICP (a colour gradient term on the floor texture and objects) or
 a learned matcher such as MASt3R's own correspondence head.
 
@@ -70,7 +74,8 @@ measure that noise floor I built a no-change control:
 
 - The unchanged before-capture is re-reconstructed from every other frame (`make_control.py`), so it is
   an independent MASt3R reconstruction of the same room, aligned to the original.
-- Running the detector between the two gives 17 false regions, the largest 91 voxels (about 11 L).
+- Running the detector between the two gives 17 false regions, the largest 90-91 voxels (about 11 L).
+  The real pair gives 10 candidate regions, none larger than the control's largest.
 - Free-space evidence was also tested as a filter (require several camera rays before a voxel counts as
   empty). It did not remove the false regions, so it was dropped. The noise comes from disagreement
   between the two reconstructions, not from single grazing rays.
@@ -94,47 +99,77 @@ Validation: OWLv2 runs on the GPU. On the synthetic scene it returned no label f
 was missing or too small) and labelled the box "laptop" at 0.15 confidence. Both are expected at
 128x72 resolution. I have not validated labels on real footage yet.
 
-## 5. Visualisation
+## 5. Visualisation and graphs
 
 - **Bird's-eye map** (`bev.png`): the room is rotated so the floor is horizontal (z up) using the
-  plane fit above. Changes are shown as coloured point sets with convex-hull footprints, and labelled.
-- **Floor choice.** `estimate_up` fits the top six planes and keeps the horizontal ones (normal within
-  53 deg of camera 0's y axis). The lowest of those is the floor. The largest plane was previously used and
-  was often a desk or wall. Each chosen plane is refined by least squares over all remaining points, and the
-  result is the median of five RANSAC runs. Plain RANSAC gave a 4-16 deg spread on the same points; the
-  median brings five of six runs within about 1 deg, with one run still 10 deg off.
-- **Floor residual, not fixed.** About 19% of before-capture points still lie below the fitted floor (0.0
-  threshold), and the share depends on which points are kept. Keeping only the top 15% by confidence, about
-  5% lie more than 5 cm below the floor. The floor normal also moves by about 15-25 deg as the
-  confidence cut changes, so the floor itself is not well determined on these reconstructions. The cause
-  is depth noise or non-planar warp, not a wrong plane choice. The bird's-eye heights stay approximate.
+  plane fit in section 6. Changes are shown as coloured point sets with convex-hull footprints, and labelled.
 - **Interactive viewer** (`viewer.html`): plotly 3D, with colour point clouds and toggleable change
   regions with bounding boxes. It runs offline.
+- **Graphs** (`scripts/make_graphs.py`, written by `run_all.py` to `outputs/graphs/`), none needing ground truth:
+  - `top_down_difference.png`: floor-frame occupancy. Cells occupied only before are red, only after blue,
+    both grey. On the real pair: 323 cells only before, 102 only after. Coverage differences contribute,
+    so isolated cells are not evidence of change.
+  - `noise_floor.png`: region sizes on the real pair against the no-change control, with the pipeline's
+    threshold (91 voxels). On the real pair no region reaches the threshold.
+  - `floor_heights.png`: heights of surface points above the fitted floor, per capture, with the 0 line.
+- Verification: the graph script exits 0 on the real outputs and inside `run_all` (log: RUN_ALL_EXIT=0). I
+  could not open the PNGs visually in this environment, so the figures were checked through their numbers,
+  not by eye.
 - Not implemented: an orbit GIF and novel-view rendering of the change overlay.
 
-## 6. Failure cases and limitations
+## 6. Floor estimation and scoring
 
-- **Synthetic video artefacts.** `make_synthetic_data.py` (Open3D offscreen rendering) produces black
-  bands on most frames, so the videos are not usable for a full run. I did not use them for validation.
-  Validation used direct ray-casting of the same scene instead.
-- **Symmetric or flat scenes** can flip the alignment (seen as 180 deg with FPFH alone). The gravity
-  prior and yaw sweep fix this for the tested case. Real rooms with more structure should be safer.
-- **Registration error** near 2 deg moves edges. Tolerance is handled by the 10 cm occupancy margin, which
-  is tuned for a 5 cm voxel. A much more accurate alignment would allow a smaller margin.
-- **Small or thin objects** (under about 50 voxels, or 0.1 L) are dropped. On the real captures, the
-  reconstruction noise (up to 91 voxels) is larger than that, so the real changes are not separable yet.
-- **Labels** depend on crop resolution. Phone footage at 1080p should help. Labels are per region from one
-  view, so I'd add voting across several views next.
-- **Floor frame residual.** About 19% of points lie below the fitted floor (see section 5). Height-based
-  readings from the bird's-eye view are therefore approximate.
-- **Occlusion** is handled only by the 'seen' count in the confidence. A region seen from only one camera
-  scores lower but is still reported.
+**Floor choice.** `estimate_up` fits the top six planes and keeps the horizontal ones (normal within
+53 deg of camera 0's y axis). The lowest of those is the floor. The largest plane was previously used and
+was often a desk or wall. Each chosen plane is refined by least squares over all remaining points, and the
+result is the median of five RANSAC runs. Plain RANSAC gave a 4-16 deg spread on the same points; the median
+brings five of six runs within about 1 deg, with one run still about 10 deg off.
 
-## 7. Next steps
+**Floor residual (open).** At the final code, 18.8% of before-capture points lie below the fitted floor,
+30% of after-capture points and 15.6% of control points. Keeping only the top 15% by confidence, about 5% of
+before points lie more than 5 cm below the floor. The floor normal also moves by about 15-25 deg as the
+confidence cut changes, so the floor is not well determined on these reconstructions. The likely cause is
+depth noise or non-planar warp, not a wrong plane choice. The bird's-eye heights stay approximate.
 
-1. Get ground truth for the real captures (what was moved, added or removed, and where) and check each
-   detection against it. The detector can't yet tell a real change from reconstruction noise on these clips.
-2. Reduce reconstruction disagreement: colour-ICP refinement to meet the 2 deg target on feature-poor scenes,
-   and a denser, better-overlapping capture.
-3. Multi-view label voting, plus a confidence score per label.
-4. Orbit GIF and a novel-view render of the change overlay.
+**Scoring (`scripts/evaluate_changes.py`).** Compares `changes.json` with a ground-truth file. Entries have a
+type (added, removed or moved). Positions are optional: with none, an entry matches any unused detection of
+that type, so the scorer needs only the types of the changes you made. With positions, a detection must lie
+within a tolerance (0.5 m default) of every given position. The matching is greedy and one-to-one.
+- Unit tests (`tests/test_evaluate_changes.py`): 8/8 pass.
+- End to end on synthetic detections from `test_change_detection_gt.py`: 4/4 matched, at 0.00-0.11 m.
+- `--frame floor` (bird's-eye coordinates) runs but is **not checked** against ground truth.
+- Real-footage scoring has not been run, because no ground truth was supplied.
+
+## 7. Limitations: status
+
+| Item | Status | Note |
+|---|---|---|
+| Real-footage changes cannot be told from reconstruction noise | **Open** | Real pair: 10 candidates, none above the 91-voxel control threshold. Needs ground truth and/or a better reconstruction. |
+| Floor residual (about 19% of points below the floor) | **Open** | Stability improved (below), but the residual is not reduced. Likely depth warp. |
+| Floor normal unstable across RANSAC runs (4-16 deg) | **Partly fixed** | Least-squares refit and median of five runs: five of six runs within about 1 deg. One run is still about 10 deg off. |
+| No way to score detections against what was actually changed | **Fixed** | `evaluate_changes.py` with type-only or positional scoring. Tested on synthetic data. |
+| No graphs | **Fixed** | `make_graphs.py` and `run_all.py` write three PNGs. Not checked by eye. |
+| Repository not on GitHub; submodule state dirty | **Fixed** | Pushed to `Humanoid-Project` (`main`, latest `6f1c46c`). MASt3R and its dependencies are pinned submodules; a fresh recursive clone works. `git status` is clean. |
+| `--frame floor` scoring mode unchecked | **Open** | Runs, but has not been compared with ground truth. |
+| Descriptions file is empty | **By design, open** | Nothing survives the noise floor, so there is nothing to describe. |
+| Registration error of about 2.4 deg / 4 cm on the synthetic pair | **Open** | Colour-ICP or a learned matcher would be needed to reach the 2 deg target. |
+| Objects under 50 voxels (about 0.1 L) are dropped | **Open** | On the real captures, reconstruction noise (up to 91 voxels) is larger than that cutoff. |
+| Labels (OWLv2) not validated on real footage | **Open** | Validated only on the synthetic scene, at low resolution. |
+| Occlusion handled only by the 'seen' count in the confidence | **Open** | A region seen from one camera scores lower but is still reported. |
+| 60-frame reconstruction exceeds 8 GB VRAM | **Open** | 40-frame cap is used. |
+| Only one real pair of captures | **Open** | No repeat captures, so repeatability is untested beyond the control. |
+| Synthetic video artefacts (black bands) | **Open** | Synthetic videos are not used for validation. Validation uses ray-casting of the same scene. |
+| Symmetric or flat scenes can flip the alignment | **Partly fixed** | Gravity prior and yaw sweep fix the tested case. Other scenes are untested. |
+| MASt3R weights are CC BY-NC-SA | **By design** | Project is non-commercial. |
+| Raw videos and reconstructions are not in the repo | **By design** | `data/` and `outputs/` are gitignored, so the clone cannot reproduce real-footage results alone. |
+
+## 8. Next steps
+
+1. Score the real clips against your ground truth. Only the types of the changes are needed:
+   `python scripts/evaluate_changes.py outputs/change_maps/changes.json your_truth.json`.
+2. Record a second pair of captures with no changes. This gives a repeatability check that is independent of
+   the control reconstruction.
+3. Investigate the depth warp behind the floor residual, for example with joint reconstruction of both clips.
+4. Colour-ICP refinement to meet the 2 deg target on feature-poor scenes.
+5. Multi-view label voting, plus a confidence score per label.
+6. Orbit GIF and a novel-view render of the change overlay.

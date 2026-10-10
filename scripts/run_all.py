@@ -53,7 +53,9 @@ def main():
     run(*(desc + (["--no-labeler"] if args.no_labeler else [])))
     run(S / "visualize.py", recon / "before.npz", recon / "after_aligned.npz", O / "change_maps" / "changes.pkl",
         "--descriptions", O / "descriptions" / "changes.json", "--out", O / "visualizations")
-    print(f"\nDone. See {O / 'descriptions' / 'changes.md'} and {O / 'visualizations'}")
+    run(S / "make_graphs.py", recon / "before.npz", recon / "after_aligned.npz",
+        ctrl / "align" / "reconstructions" / "after_aligned.npz", O / "graphs")
+    print(f"\nDone. See {O / 'descriptions' / 'changes.md'}, {O / 'visualizations'} and {O / 'graphs'}")
 
 
 if __name__ == "__main__":
