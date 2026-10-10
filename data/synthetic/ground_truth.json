@@ -1,0 +1,51 @@
+{
+  "scene": "synthetic desk corner (2 orbit videos, 4 changes)",
+  "changes": [
+    {
+      "name": "chair",
+      "type": "moved",
+      "label": "black office chair",
+      "before_xy": [
+        0.5,
+        0.05
+      ],
+      "after_xy": [
+        -0.7,
+        0.05
+      ],
+      "displacement_m": 1.2
+    },
+    {
+      "name": "cardboard_box",
+      "type": "moved",
+      "label": "cardboard box",
+      "before_xy": [
+        -0.5,
+        -0.45
+      ],
+      "after_xy": [
+        0.3,
+        -0.55
+      ],
+      "displacement_m": 0.8
+    },
+    {
+      "name": "backpack",
+      "type": "added",
+      "label": "red backpack",
+      "after_xy": [
+        -0.35,
+        0.98
+      ]
+    },
+    {
+      "name": "plant",
+      "type": "removed",
+      "label": "potted plant",
+      "before_xy": [
+        -1.1,
+        1.15
+      ]
+    }
+  ]
+}

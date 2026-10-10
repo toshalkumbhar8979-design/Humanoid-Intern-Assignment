@@ -1,0 +1,18 @@
+# Python 3.11. Install PyTorch with CUDA first (CPU-only wheels also work, but MASt3R is slow on CPU):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+numpy>=2.0
+scipy>=1.11
+open3d==0.20.0
+opencv-python>=4.9
+imageio>=2.33
+pillow>=10
+matplotlib>=3.8
+plotly>=5.20
+trimesh>=4.0
+tqdm
+einops
+roma
+huggingface-hub>=0.22
+scikit-learn
+transformers>=4.45
+pyglet<2
