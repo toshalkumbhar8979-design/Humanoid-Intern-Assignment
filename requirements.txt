@@ -16,3 +16,4 @@ huggingface-hub>=0.22
 scikit-learn
 transformers>=4.45
 pyglet<2
+ultralytics>=8.3
