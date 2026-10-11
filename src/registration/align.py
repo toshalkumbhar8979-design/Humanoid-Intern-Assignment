@@ -101,7 +101,7 @@ def _estimate_up_once(points: np.ndarray, cam0_c2w: np.ndarray, n_planes: int = 
     return best[1], best[2], best[3]
 
 
-def estimate_up(points: np.ndarray, cam0_c2w: np.ndarray, runs: int = 5, **kwargs):
+def estimate_up(points: np.ndarray, cam0_c2w: np.ndarray, runs: int = 15, **kwargs):
     """Unit 'up' vector and floor offset for one reconstruction, robust to RANSAC randomness.
 
     RANSAC picks a slightly different floor on each run (4-16 deg spread on the same points), so we take

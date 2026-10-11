@@ -224,28 +224,28 @@ Status values: **Fixed** (a test or a measurement in the note), **Partly fixed**
 
 | Item | Status | Note |
 |---|---|---|
-| Voxel regions find 0 changes on my clips | **Open** | Control noise is at least as large as the real candidates at every voxel size and tolerance swept (section 3). Why still open: no threshold separates the two, and tuning one to fit my clips would be overfitting. |
+| Voxel regions find 0 changes on my clips | **Open** | 40-frame run: 0 regions. 60-frame run: 1 added region (19.4 L, 155 voxels) that passes the control cut-off. The control's largest artefact there is 133 voxels, so the margin is 22 voxels. The noise floor was 90 voxels at 40 frames and 133 at 60, so it moves between runs. Why still open: one candidate at that margin is not a reliable detection, and tuning the cut-off to fit my clips would be overfitting. |
 | Object method has false alarms on an unchanged scene | **Partly fixed** | Footprint check plus YOLO-World: 0 false alarms on the control, COCO and YOLO-World. One control only. |
-| Real-pair object changes not confirmed | **Open** | 0 confirmed on the real pair (YOLO-World); 12 unconfirmed, each with its reason in `objects.md`. Why still open: confirming needs a clean match, and the footprint check cannot give one on these clips. |
+| Real-pair object changes not confirmed | **Open** | 40 frames: 0 confirmed. 60 frames (labeler on): 1 confirmed, a `bag` added at (0.81, 0.45, 0.03) m, seen in 7 frames. It is about 0.15 m from the 155-voxel region. 12 unconfirmed, each with its reason in `objects.md`. Not checked against the real scene. Why still open: scoring it needs your change list. |
 | Point test on the object centre | **Fixed** | Replaced by a 9-point footprint test (section 4). Measured on the real pair and the control. |
 | Bed "move" has a vertical jump | **Partly fixed** | Rule: a matched move with a vertical jump over 0.15 m is unconfirmed, with its reason. YOLO-World's bed jump is -0.80 m; the backpack's is -1.04 m (both unconfirmed). The rule is a physical assumption (floor objects do not rise), so an object on a bed or chair can be wrongly flagged. Tested in `tests/test_detect_objects.py`. The cause (centre mismatch) is not fixed. |
 | Floor residual (about 19% of points below the floor) | **Open** | Stability improved, residual not reduced. Likely depth warp. Why still open: fixing it means changing the reconstruction, and I have not found a fix that reduces it. |
-| Floor normal unstable across RANSAC runs (4-16 deg) | **Partly fixed** | Least-squares refit and median of five runs: five of six within about 1 deg; one run still about 10 deg off. |
+| Floor normal unstable across RANSAC runs (4-16 deg) | **Partly fixed** | Default is now a median of 15 RANSAC runs (was 5). On the real before capture, 0 of 8 trials came out bad at 15 runs, against 1 of 8 at 5 runs (bad = a median pulled about 10 deg off by one RANSAC run). About 2 s per call. Only 8 trials. Previously: Least-squares refit and median of five runs: five of six within about 1 deg; one run still about 10 deg off. |
 | No way to score detections against what I changed | **Partly fixed** | `evaluate_changes.py` scores voxel output and, with `--objects`, object output (9 unit tests). Real scoring needs the author's list of changes. |
 | No graphs | **Fixed** | `make_graphs.py` writes three PNGs; checked through numbers only. |
 | Object-level detection did not exist | **Fixed (experimental)** | `detect_objects.py` runs in `run_all`, with the footprint check and a null check. |
 | Repository not on GitHub; submodule state dirty | **Fixed** | Pushed. MASt3R, DUSt3R and CroCo are pinned submodules, and a fresh recursive clone works. Each run regenerates `__pycache__` in the submodules; set `PYTHONDONTWRITEBYTECODE=1` to avoid it. |
-| `--frame floor` scoring mode unchecked | **Open** | Runs, but needs ground truth in the floor frame, which I do not have. Why still open: no floor-frame truth exists here. |
+| `--frame floor` scoring mode unchecked | **Partly fixed** | Bug fixed: the truth stayed in the raw frame while detections were rotated. `--truth-frame floor` now handles both cases, and a unit test on a tilted synthetic floor passes (10/10 in `test_evaluate_changes.py`). Not measured on real data. Why still open: scoring on real footage needs the author's changes in the floor frame. |
 | Descriptions file is empty on the real pair | **Partly fixed** | Object descriptions (`objects.md`) are written. No confirmed change exists on the real pair, so `changes.md` stays empty. |
 | Registration error about 2.4 deg / 4 cm on the synthetic pair | **Partly fixed** | Colour refinement reaches 1.13 deg / 2.1 cm on the synthetic pair (target met). It is opt-in, and on the real pair the effect is mixed. |
-| Objects under 50 voxels are dropped | **Open** | Reconstruction noise on my clips (up to 90 voxels) is larger than that cut-off. The control sets the cut-off automatically; I have not changed the rule. Why still open: a lower cut-off would let noise through, which the null check would show. |
+| Objects under 50 voxels are dropped | **Open** | Measured at `min_voxels=1`. 40 frames: real-pair regions 1-9 voxels; control 14 below 50 and 3 at 58-90. 60 frames: real pair 1-155 voxels (9 below 50, 1 at 155); control 12 below 50 and 2 at 71-133. The 50 cut-off does not remove any real candidate that is between 10 and 50 voxels; the control rule sets the real cut-off (91, then 134). Why still open: that rule is set by noise on one control, and it changed between runs. |
 | YOLO COCO classes only | **Partly fixed** | YOLO-World with a 30-name room vocabulary (`--detector yolo-world`, used by `run_all`). Only those 30 names are tested. |
 | Labels (OWLv2) not validated on real footage | **Partly fixed** | `check_labels.py` on 67 real crops: on 34 that both detectors can name, OWLv2 agrees with YOLO-World on 24 (70.6%). Agreement between two detectors, not accuracy against truth. Mug crops disagree (0 of 4). |
 | Occlusion handled only by the 'seen' count and the hidden vote | **Partly fixed** | Hidden spots give no vote; a spot seen from one frame still scores low. |
-| 60-frame reconstruction exceeds 8 GB VRAM | **Fixed** | Measured: 60 frames fit, peak 7,896 MiB of 8,151 MiB (reconstruction only). The full pipeline at 60 frames is not measured. |
+| 60-frame reconstruction exceeds 8 GB VRAM | **Fixed** | 60 frames fit: peak 7,896 MiB of 8,151 MiB. The full `run_all.py --max-frames 60` (labeler on) ran with no errors in 2,028 s wall time, with peak 7,896 MiB sampled every 5 s. Its results differ from 40 frames (rows above). |
 | Only one pair of captures | **Open** | Needs a new recording from the author. Why still open: I cannot record new clips from here. |
 | Symmetric or flat scenes can flip the alignment | **Partly fixed** | Gravity prior and yaw sweep fix the case I tested. Other scenes are untested. |
-| Synthetic clip artefacts (black bands) | **Open** | Synthetic clips are used only for geometry checks, not for a full run. Why still open: the bands come from the clip generator, and fixing them means regenerating the clips. |
+| Synthetic clip artefacts (black bands) | **Open** | Not fixed. The generator's own check flagged 343 of 720 before frames and 299 of 720 after frames after 12 tries each. Frames re-rendered alone pass, so the renderer drifts over a long run. Tried, no gain: rebuilding the renderer (Filament aborts when old renderers are destroyed, and keeping them hits the 32-timer limit), and reloading the scene in the same renderer (1,802 reloads, 221 flagged before frames by frame 553 against 266 at baseline). The generator is unchanged. Why still open: no reset found, and the synthetic clips are not used for real results. |
 | MASt3R weights CC BY-NC-SA; YOLOv8 AGPL-3.0 | **By design** | Project is non-commercial. |
 | Raw clips and reconstructions are not in the repo | **By design** | `data/`, `outputs/`, `models/` and `weights/` are git-ignored. |
 
@@ -253,7 +253,7 @@ Status values: **Fixed** (a test or a measurement in the note), **Partly fixed**
 
 1. Score the object output and the voxel output against the changes I made on my clips, with `evaluate_changes.py`.
    I need the type and rough place of each change for that.
-2. Run the full `run_all.py` with the labeler on (the measured run used `--no-labeler`).
+2. Done: `run_all.py --max-frames 60` with the labeler on ran in 2,028 s, peak 7,896 MiB (section 8). Next, score the 60-frame `bag` and 155-voxel region against your change list.
 3. Check the OWLv2 labels against a hand-labelled set of real crops, so agreement becomes accuracy.
 4. Record a second pair of captures with no changes, to measure repeatability beyond the control.
 5. Measure the floor-frame scoring mode with ground truth in the floor frame.

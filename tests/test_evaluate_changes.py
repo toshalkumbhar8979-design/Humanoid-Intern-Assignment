@@ -3,7 +3,10 @@
 Run:  python tests/test_evaluate_changes.py      (or: pytest tests/test_evaluate_changes.py)
 """
 import sys
+import tempfile
 from pathlib import Path
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -84,6 +87,39 @@ def test_synthetic_ground_truth_loads_and_is_well_formed():
     import json
     gt = json.loads((ROOT / "data" / "synthetic" / "ground_truth.json").read_text())["changes"]
     assert all(g["type"] in ev.KINDS for g in gt)
+
+
+def _tilted_floor_npz() -> Path:
+    """A before reconstruction that is one plane: a floor tilted about 8 degrees, seen by a camera at the origin."""
+    H, W, F, s = 60, 80, 60.0, 0.14
+    vv, uu = np.mgrid[0:H, 0:W].astype(float)
+    denom = (vv - H / 2) / F - s                  # floor: y = 1.2 + s * z (camera y points down)
+    z = np.where(denom > 0.05, 1.2 / np.maximum(denom, 1e-6), 0.0)
+    ok = (z > 0.3) & (z < 6.0)
+    pts = np.stack([(uu - W / 2) / F * z, (vv - H / 2) / F * z, z], -1)
+    path = Path(tempfile.mkdtemp()) / "before.npz"
+    np.savez(path, points=pts[None], conf=ok[None].astype(np.float32),
+             colors=np.zeros((1, H, W, 3), np.float32), c2w=np.eye(4)[None], focals=np.array([F]))
+    return path
+
+
+def test_floor_frame_matches_truth_only_when_truth_is_converted():
+    npz = _tilted_floor_npz()
+    R, shift = ev.floor_frame(npz)
+    # a centroid far from the camera axis: the tilt moves its x and y by a clear margin
+    P = np.array([1.2, 0.3, 3.0])
+    det = [{"id": 1, "kind": "removed", "centroid_before": P.tolist(), "centroid_after": None}]
+    truth = [{"type": "removed", "name": "box", "before_xy": P[:2].tolist(), "before_z": float(P[2])}]
+    f_det = ev.to_floor_frame(det, R, shift)
+    assert ev.score(f_det, ev.truth_to_floor_frame(truth, R, shift), tol=0.05)["tp"] == 1
+    # the old behaviour: rotating only the detections puts the same object far from its truth
+    assert ev.score(f_det, truth, tol=0.05)["tp"] == 0
+    try:
+        ev.truth_to_floor_frame([{"type": "removed", "name": "x", "before_xy": [1.0, 0.3]}], R, shift)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("truth without before_z must not be converted silently")
 
 
 if __name__ == "__main__":

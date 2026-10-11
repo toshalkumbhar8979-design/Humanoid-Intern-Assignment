@@ -13,6 +13,9 @@ Without positions, an entry matches any unused detection of the same type.
 
 --frame raw    detection centroids as stored (MASt3R before-capture frame; use for synthetic GT)
 --frame floor  centroids rotated so the floor is z = 0 (same frame as bev.png); needs --before
+--truth-frame raw    (default) ground truth is in the raw frame; with --frame floor it is rotated too,
+                     which needs before_z / after_z (height in the raw frame) on each entry that has a position
+--truth-frame floor ground truth is already in the floor frame (no conversion)
 Exit code 0 when the files are read and scored; 1 on malformed input. A low score is not an error.
 """
 import argparse
@@ -94,27 +97,51 @@ def objects_to_detections(objects: list[dict]) -> list[dict]:
     return out
 
 
-def to_floor_frame(detections: list[dict], before_npz: Path) -> list[dict]:
-    """Rotate centroids into the bird's-eye frame: floor normal -> z, floor at z = 0."""
+def floor_frame(before_npz: Path):
+    """(R, shift) of the bird's-eye floor frame for a before reconstruction (the frame bev.png uses)."""
     from registration.align import surface_points
     from visualization.plots import floor_transform
 
     recon = dict(np.load(before_npz))
     pts, _ = surface_points(recon)
-    R, shift = floor_transform(pts, recon["c2w"][0])
+    return floor_transform(pts, recon["c2w"][0])
 
-    def to_f(p):
-        if p is None:
-            return None
-        q = R @ np.asarray(p, dtype=float)
-        q[2] += shift
-        return q.tolist()
 
+def _to_floor_point(p, R: np.ndarray, shift: float) -> list[float]:
+    q = R @ np.asarray(p, dtype=float)
+    q[2] += shift
+    return q.tolist()
+
+
+def to_floor_frame(detections: list[dict], R: np.ndarray, shift: float) -> list[dict]:
+    """Rotate detection centroids into the floor frame (floor normal -> z, floor at z = 0)."""
     out = []
     for d in detections:
         e = dict(d)
-        e["centroid_before"] = to_f(d.get("centroid_before"))
-        e["centroid_after"] = to_f(d.get("centroid_after"))
+        for key in ("centroid_before", "centroid_after"):
+            if d.get(key) is not None:
+                e[key] = _to_floor_point(d[key], R, shift)
+        out.append(e)
+    return out
+
+
+def truth_to_floor_frame(truth: list[dict], R: np.ndarray, shift: float) -> list[dict]:
+    """Rotate raw-frame ground truth into the floor frame.
+
+    The rotation mixes height into x and y, so each position needs its height (before_z / after_z, metres,
+    raw frame). Without it the conversion is undefined and this raises ValueError.
+    """
+    out = []
+    for g in truth:
+        e = dict(g)
+        for xy_key in ("before_xy", "after_xy"):
+            if g.get(xy_key) is None:
+                continue
+            z_key = xy_key.replace("_xy", "_z")
+            if g.get(z_key) is None:
+                raise ValueError(f"ground-truth entry {g.get('name', '?')!r}: {xy_key} needs {z_key} "
+                                 "(height in the raw frame) to convert to the floor frame")
+            e[xy_key] = _to_floor_point([*g[xy_key], g[z_key]], R, shift)[:2]
         out.append(e)
     return out
 
@@ -125,6 +152,8 @@ def main() -> int:
     ap.add_argument("truth", type=Path, help="ground-truth JSON")
     ap.add_argument("--tol", type=float, default=0.5, help="position tolerance in metres (default 0.5)")
     ap.add_argument("--frame", choices=("raw", "floor"), default="raw")
+    ap.add_argument("--truth-frame", choices=("raw", "floor"), default="raw",
+                    help="frame of the ground truth when --frame floor (default raw)")
     ap.add_argument("--before", type=Path, default=None, help="before reconstruction .npz (needed for --frame floor)")
     ap.add_argument("--objects", action="store_true",
                     help="detections are objects.json from detect_objects.py (only confirmed moved/added/removed count)")
@@ -146,11 +175,21 @@ def main() -> int:
             return 1
     if args.objects:
         detections = objects_to_detections(detections)
+    if args.truth_frame == "floor" and args.frame != "floor":
+        print("error: --truth-frame floor only applies with --frame floor", file=sys.stderr)
+        return 1
     if args.frame == "floor":
         if args.before is None:
             print("error: --frame floor needs --before", file=sys.stderr)
             return 1
-        detections = to_floor_frame(detections, args.before)
+        R, shift = floor_frame(args.before)
+        detections = to_floor_frame(detections, R, shift)
+        if args.truth_frame == "raw":
+            try:
+                truth = truth_to_floor_frame(truth, R, shift)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 1
 
     res = score(detections, truth, args.tol)
     print(f"ground truth: {len(truth)} changes, detections: {len(detections)}, tol {args.tol} m, frame {args.frame}")
