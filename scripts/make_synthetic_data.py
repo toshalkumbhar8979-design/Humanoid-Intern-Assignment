@@ -18,6 +18,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -164,8 +165,20 @@ def orbit_pose(t: float, start_deg: float, end_deg: float, rng_jitter: np.ndarra
 
 
 # ----------------------------------------------------------------------------- render
-def render_video(state: str, out_mp4: Path, start_deg: float, end_deg: float, seed: int, tmp: Path):
+# capture -> (start_deg, end_deg, jitter seed)
+CAPTURES = {"before": (240, 300, 1), "after": (250, 310, 2)}
+# Frames per renderer process. One Open3D renderer drifts over a long run and returns black bands for whole
+# stretches (one renderer: 343 of 720 before frames flagged; a fresh renderer per 40 frames: 0). DESIGN.md section 8.
+CHUNK = 40
+
+
+def render_frames(state: str, frames_dir: Path, start: int, end: int, seed: int) -> None:
+    """Render frames [start, end) of one capture in this process, with its own renderer."""
+    start_deg, end_deg, _ = CAPTURES[state]
+    n = FPS * SECONDS
     rng = np.random.default_rng(seed)
+    jitters = [rng.normal(0, 0.01, 2) for _ in range(n)]  # same stream in every chunk: camera path is unchanged
+
     r = rendering.OffscreenRenderer(W, H)
     r.scene.set_background(np.array([0.93, 0.92, 0.9, 1.0]))
     r.scene.scene.set_sun_light([0.4, -0.5, -0.8], [1.0, 0.98, 0.94], 70000)
@@ -178,13 +191,10 @@ def render_video(state: str, out_mp4: Path, start_deg: float, end_deg: float, se
         r.scene.add_geometry(name, mesh, mat)
 
     K = np.array([[FOCAL, 0, W / 2], [0, FOCAL, H / 2], [0, 0, 1.0]])
-    n = FPS * SECONDS
-    frames_dir = tmp / state
     frames_dir.mkdir(parents=True, exist_ok=True)
-    for i in range(n):
+    for i in range(start, end):
         t = i / (n - 1)
-        jitter = rng.normal(0, 0.01, 2)
-        eye = orbit_pose(t, start_deg, end_deg, jitter)
+        eye = orbit_pose(t, start_deg, end_deg, jitters[i])
         r.setup_camera(K, look_at_extrinsic(eye, CENTER), W, H)
         # Open3D's offscreen renderer intermittently returns black or background-only buffers,
         # so redraw until the frame actually contains the scene (bounded retries).
@@ -197,8 +207,23 @@ def render_video(state: str, out_mp4: Path, start_deg: float, end_deg: float, se
                 break
         else:
             # Keep the last render; the Phase-1 quality filter (extract_frames.py) rejects it.
-            print(f"warning: {state} frame {i} still has render artefacts after retries")
+            print(f"warning: {state} frame {i} still has render artefacts after retries", flush=True)
         Image.fromarray(img).save(frames_dir / f"f{i:05d}.png")
+
+
+def render_video(state: str, out_mp4: Path, tmp: Path):
+    n = FPS * SECONDS
+    seed = CAPTURES[state][2]
+    frames_dir = tmp / state
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    script = str(Path(__file__).resolve())
+    for s in range(0, n, CHUNK):
+        e = min(n, s + CHUNK)
+        proc = subprocess.run([sys.executable, script, "--render-chunk", state, str(frames_dir), str(s), str(e),
+                               str(seed)], capture_output=True, text=True)
+        print(proc.stdout, end="")
+        if proc.returncode != 0:
+            raise RuntimeError(f"rendering {state} frames {s}-{e} failed:\n{proc.stderr[-2000:]}")
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(FPS), "-i", str(frames_dir / "f%05d.png"),
@@ -217,8 +242,8 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="synth_"))
     # Different viewpoints for the two captures (plan: "capture from different viewpoints")
     # Arcs stay in front of the open side of the room: the left wall would occlude a camera further left.
-    render_video("before", root / "before" / "before.mp4", 240, 300, seed=1, tmp=tmp)
-    render_video("after", root / "after" / "after.mp4", 250, 310, seed=2, tmp=tmp)
+    render_video("before", root / "before" / "before.mp4", tmp)
+    render_video("after", root / "after" / "after.mp4", tmp)
     gt_path = root / "synthetic" / "ground_truth.json"
     gt_path.parent.mkdir(parents=True, exist_ok=True)
     gt_path.write_text(json.dumps(ground_truth(), indent=2))
@@ -227,4 +252,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--render-chunk":  # worker: one chunk, one renderer process
+        _, _, state, frames_dir, start, end, seed = sys.argv
+        render_frames(state, Path(frames_dir), int(start), int(end), int(seed))
+    else:
+        main()
