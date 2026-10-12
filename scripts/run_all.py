@@ -51,17 +51,19 @@ def main():
     desc = [S / "describe_changes.py", recon / "before.npz", recon / "after_aligned.npz",
             O / "change_maps" / "changes.pkl", "--out", O / "descriptions"]
     run(*(desc + (["--no-labeler"] if args.no_labeler else [])))
-    run(S / "visualize.py", recon / "before.npz", recon / "after_aligned.npz", O / "change_maps" / "changes.pkl",
-        "--descriptions", O / "descriptions" / "changes.json", "--out", O / "visualizations")
-    run(S / "make_graphs.py", recon / "before.npz", recon / "after_aligned.npz",
-        ctrl / "align" / "reconstructions" / "after_aligned.npz", O / "graphs")
-    # object level: YOLO boxes lifted to 3D, matched across captures; the control is the null check
+    # object level: YOLO boxes lifted to 3D, matched across captures; the control is the null check.
+    # This runs before visualize.py so the confirmed object changes can be drawn in the 3D views.
     run(S / "detect_objects.py", "--before-recon", recon / "before.npz", "--before-frames", frames["before"],
         "--after-recon", recon / "after_aligned.npz", "--after-frames", frames["after"],
         "--max-frames", args.max_frames, "--detector", "yolo-world", "--out", O / "objects")
     run(S / "detect_objects.py", "--before-recon", recon / "before.npz", "--before-frames", frames["before"],
         "--after-recon", ctrl / "align" / "reconstructions" / "after_aligned.npz", "--after-frames", ctrl / "frames",
         "--max-frames", args.max_frames, "--detector", "yolo-world", "--out", O / "objects_null")
+    run(S / "visualize.py", recon / "before.npz", recon / "after_aligned.npz", O / "change_maps" / "changes.pkl",
+        "--descriptions", O / "descriptions" / "changes.json", "--objects", O / "objects" / "objects.json",
+        "--out", O / "visualizations")
+    run(S / "make_graphs.py", recon / "before.npz", recon / "after_aligned.npz",
+        ctrl / "align" / "reconstructions" / "after_aligned.npz", O / "graphs")
     print(f"\nDone. See {O / 'descriptions' / 'changes.md'}, {O / 'visualizations'} and {O / 'graphs'}")
 
 

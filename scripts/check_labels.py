@@ -29,7 +29,7 @@ from semantics.describe import VOCAB, OwlLabeler  # noqa: E402
 OWL_NAMES = {v.removeprefix("a ").removeprefix("an ") for v in VOCAB}
 # the two vocabularies name the same thing differently; score on normalised labels
 SYNONYMS = {"cardboard box": "box", "cup": "mug", "water bottle": "bottle", "potted plant": "plant",
-            "television": "tv", "armchair": "chair", "couch": "sofa"}
+            "computer mouse": "mouse", "television": "tv", "armchair": "chair", "couch": "sofa"}
 
 
 def norm(label: str) -> str:
@@ -124,6 +124,14 @@ def main() -> int:
             "owlv2_accuracy": round(len(owl_ok) / len(scored), 3) if scored else None,
             "yolo_world_strict_accuracy": round(len(yolo_strict) / len(scored), 3) if scored else None,
             "owlv2_strict_accuracy": round(len(owl_strict) / len(scored), 3) if scored else None,
+            "per_class": {
+                k: {
+                    "n": n,
+                    "yolo_world_correct": sum(1 for r in scored if norm(r["hand_label"]["dominant"]) == k and r["yolo_ok"]),
+                    "owlv2_correct": sum(1 for r in scored if norm(r["hand_label"]["dominant"]) == k and r["owl_ok"]),
+                }
+                for k, n in sorted(Counter(norm(r["hand_label"]["dominant"]) for r in scored).items())
+            },
             "note": ("accuracy against hand labels written while reviewing crops; correct = label names any "
                      "object clearly visible in the crop (acceptable set), strict = label names the dominant one. "
                      "Synonyms across the two vocabularies are normalised (cardboard box=box, cup=mug). "

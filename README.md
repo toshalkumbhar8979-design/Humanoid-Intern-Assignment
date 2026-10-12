@@ -140,20 +140,20 @@ has not been checked against ground truth, because my synthetic ground truth is 
 | MASt3R on the RTX 5050 (3 photos, 512 px, 100 iterations) | runs, 22 s, finite pointmaps and poses |
 | MASt3R on the RTX 5050, 60 frames (reconstruction only) | exit 0; peak 7,896 MiB of 8,151 MiB (sampled every 3 s) |
 | Alignment recovers a known rigid perturbation of 25 deg yaw + 0.4 m shift | 2.41 deg / 4.4 cm without colour; 1.13 deg / 2.1 cm with `--color` (target 2 deg / 5 cm) |
-| Colour ICP on the real pair | fitness 0.625 vs 0.653 without; RMSE 2.14 vs 2.19 cm. Mixed, so it stays off by default |
+| Colour ICP on the real pair (60 frames) | fitness 0.6106 vs 0.6209 without; RMSE 2.21 vs 2.19 cm. No gain, so it stays off by default (measured) |
 | Change detection vs. synthetic ground truth (4 changes) | 4/4 correct kinds; moved distances 1.2 m / 0.9 m (GT 1.2 / 0.8) |
-| Voxel regions on the real pair | run, but 0 regions above the noise floor (DESIGN.md, section 3) |
+| Voxel regions on the real pair | 40 frames: 0 regions above the noise floor. 60 frames: 1 added region (155 voxels) over the 133-voxel control cut-off; thin margin, so still open (DESIGN.md, section 3) |
 | Projection convention for the visibility check | each frame's pointmap projects back onto its own pixels with 0 px median error |
-| Object stage, YOLO-World, real pair | exit 0: 7 stayed, 0 confirmed changes, 12 unconfirmed |
-| Object stage, YOLO-World, no-change control | exit 0: 10 stayed, 0 false alarms, 6 unconfirmed |
+| Object stage, YOLO-World, real pair (60 frames, floor frame) | exit 0: 10 stayed, 1 confirmed change (added `bag`), 11 unconfirmed |
+| Object stage, YOLO-World, no-change controls | exit 0 on all three controls (before-odd, before-even, after-odd): 0 false alarms each |
 | Object stage, COCO, footprint check (earlier) | real pair 6 stayed, 6 unconfirmed; control 6 stayed, 4 unconfirmed, 0 false alarms |
-| Object descriptions (`objects.md`) | generated from the YOLO-World output, listing the unconfirmed objects with their reasons |
+| Object descriptions (`objects.md`) | generated from the YOLO-World output: the added `bag` and every unconfirmed object with its reason |
 | Object scorer (`evaluate_changes.py --objects`) | 9/9 unit tests pass, including the object mapping; no real ground truth to score yet |
 | CLI scripts (`detect_changes`, `describe_changes --no-labeler`, `visualize`) | run on the synthetic outputs |
-| OWLv2 labeler, real crops | `check_labels.py`: agrees with YOLO-World on 24 of 34 comparable crops (70.6%); mug crops 0 of 4. Agreement, not accuracy |
+| OWLv2 labeler, real crops | `check_labels.py` against 65 hand-labelled crops: 78.5% name a visible object (63.1% the dominant one); YOLO-World 80.0% / 76.9%. The labeller is the agent, so not independent ground truth |
 | OWLv2 labeler, synthetic crops | unreliable on the low-resolution synthetic crops |
 | Graphs (`make_graphs.py`) | run on the real outputs (exit 0); PNGs written, checked through numbers only |
-| Full pipeline on the real clips | `run_all.py --no-labeler`: exit 0 in 889 s with the YOLO-World object stage; voxel 0 changes; objects 0 confirmed, 12 unconfirmed |
+| Full pipeline on the real clips | 40 frames `--no-labeler`: exit 0 in 889 s (voxel 0 changes). 60 frames with the labeler: exit 0 in 2,028 s and again in 2,032 s, same outputs (1 voxel region; 1 confirmed added `bag`, 11 unconfirmed) |
 
 `python tests/test_pipeline_glue.py` runs the post-reconstruction stages on ground-truth renders (exit 0).
 It needs no model weights and took about 20 s on the RTX 5050 machine.
@@ -181,8 +181,8 @@ third_party/    MASt3R checkout (clone, see Installation)
 - MASt3R, 512 px, sequential scene graph (swin-2), capped at 40 frames (`--max-frames`): on the real 30 s
   clips, the 300-iteration global alignment took about 55 s per sequence on the RTX 5050. Descriptors are dropped
   per pair to stay within host RAM; with swin-5 and 84-89 frames the run ran out of memory (measured).
-- A 60-frame reconstruction also fits the 8 GB card: 7,896 MiB peak of 8,151 MiB, sampled every 3 s. The full
-  pipeline at 60 frames is not measured yet, and the margin is small.
+- A 60-frame reconstruction also fits the 8 GB card: 7,896 MiB peak of 8,151 MiB, sampled every 3-5 s. The full
+  pipeline at 60 frames is measured: 2,028 s and 2,032 s wall time in two runs (labeler on), same peak.
 - The full `run_all.py --no-labeler` on the real clips took 889 s with the YOLO-World object stage (measured, including the control). An earlier run with COCO took about 25-30 minutes
   objects). The YOLO-World object stage has been run on its own on the real pair and on the control (about
   2-3 minutes for both together); the full pipeline with it is timed above.
@@ -193,12 +193,14 @@ third_party/    MASt3R checkout (clone, see Installation)
 
 See DESIGN.md, section 8, for the full status table. The main ones:
 
-- The voxel detector finds nothing on my real clips, and the object detector confirms nothing there either.
+- The voxel detector finds one region on the 60-frame pair (0 at 40 frames) and the object detector confirms one
+  added `bag`; neither is checked against a change list yet, and the voxel margin over the control is thin.
 - The object vocabulary has 30 names. Objects outside that list are not found.
 - The footprint check is horizontal at the object's centre height, so it does not cover an object's full height.
-- The synthetic clips have rendering artefacts (about 90% of frames have black bands), so they are used only for
-  geometric validation.
-- OWLv2 labels need real-resolution crops; the synthetic crops are too small, and on real crops OWLv2 agrees with YOLO-World on 70.6% of comparable crops (agreement, not accuracy).
+- The synthetic clips had rendering artefacts (black bands); the generator now renders in fresh-renderer chunks
+  and both clips come out clean (0 of 720 frames flagged). They are still used only for geometric validation.
+- OWLv2 labels need real-resolution crops (the synthetic crops are too small). On 65 hand-labelled real crops it
+  names a visible object in 78.5% of cases; the labels are the agent's, so this is not independent ground truth.
 
 ## Licences
 

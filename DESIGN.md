@@ -14,9 +14,9 @@ optional path for visualisation.
 
 Trade-off: MASt3R's weights are CC BY-NC-SA, so the project is non-commercial.
 
-Memory: a 60-frame reconstruction fits in the 8 GB of the RTX 5050. I sampled `nvidia-smi` every 3 s during the
-run: the peak was 7,896 MiB of 8,151 MiB, and the run finished with exit 0. That is a reconstruction-only
-measurement, with about 255 MiB to spare, so the full pipeline at 60 frames is not measured yet.
+Memory: a 60-frame reconstruction fits in the 8 GB of the RTX 5050. I sampled `nvidia-smi` every 3-5 s during
+the runs: the peak was 7,896 MiB of 8,151 MiB, about 255 MiB to spare. The full `run_all.py --max-frames 60` with
+the labeler is measured too: 2,028 s and 2,032 s wall time in two runs, same peak and same outputs (section 8).
 
 ## 2. Alignment: gravity prior, yaw sweep, then ICP
 
@@ -97,8 +97,16 @@ is a few centimetres, so comparing object centres is much more robust than compa
     30 room-object names (`ROOM_VOCAB`). I fixed the list before looking at any result. On the first 40 real
     before-frames it finds 20 classes at confidence 0.3 or higher, including desk, laptop, mouse, backpack,
     mug and pillow, which COCO cannot name.
-- Each box's central 40% is looked up in that frame's pointmap, using the points above the frame's median
-  confidence. The median of those points is the object's 3D position in the shared floor frame, in metres.
+- Each box's bottom 40% band (its support contact) is looked up in that frame's pointmap, using the points
+  above the frame's median confidence. The median of those points is the object's 3D position, in metres. The
+  bottom band is used because it sits at the same height when the viewpoint changes (the centre of a bed's box
+  is mattress in one view and headboard in another). `--lift inner` restores the old centre window; measured on
+  the real pair, the two are close (mean height jump of the candidate moves 0.40 vs 0.38 m) and the bottom band
+  is kept because height is the rule's physical quantity.
+- Positions and height comparisons are in the **fitted floor frame** (floor at z = 0, z up; the same frame as
+  `bev.png`). This matters: MASt3R's raw frame has an arbitrary up (in my capture it is `[0.02, -0.56, -0.83]`,
+  nearly sideways), and before this fix `vertical_m` compared a nearly horizontal axis and `objects.md` claimed
+  a frame it did not use. A unit test covers the mapping.
 - Observations of the same class within 0.3 m are merged into one object per capture. An object must appear in
   at least 3 frames.
 - Same-class objects are matched across captures by Hungarian assignment on 3D distance. A match under 0.3 m is
@@ -111,8 +119,11 @@ is a few centimetres, so comparing object centres is much more robust than compa
   - **empty**: the surface is behind the point by more than 0.15 m, so the ray reaches the point in free space;
   - **occupied**: a surface sits within 0.4 m in front of the point, or up to 0.15 m behind it;
   - **hidden**: a surface lies more than 0.4 m in front, so the point cannot be seen.
-- A point is empty when at least 2 frames vote empty and none vote occupied. A spot is **empty** when at least two
-  thirds of its voting sample points are empty, and **occupied** when at least one third are occupied.
+- A point's status needs `--min-seen` frames that see it (2 by default) and `--min-votes` of them agreeing (2):
+  empty when 2+ vote empty and none vote occupied, occupied when 2+ vote occupied and none vote empty, and
+  unknown on any mix. So one frame can no longer flip a spot to occupied (unit tested). A spot is **empty** when
+  at least two thirds of its voting sample points are empty, and **occupied** when at least one third are
+  occupied; the output records how many samples abstained.
 - An unmatched before object is **removed** only if its spot is empty in the after capture; an unmatched after
   object is **added** only if its spot is empty in the before capture. A candidate move is **moved** only if both
   its old and new spots are empty.
@@ -135,19 +146,23 @@ as stayed or unconfirmed. Any moved, removed or added result is a false alarm.
 
 Before the visibility check, the COCO stage reported 1 moved, 4 added and 1 removed on the real pair, and 4
 added/removed on the control. The footprint check removes every false alarm on the control, in both detectors,
-and it confirms no change on the real pair. I count that as the honest result. The control is one run, so
-"zero false alarms" is measured on one unchanged scene only.
+and it confirms no change on the real pair. I count that as the honest result. Zero false alarms is now measured
+on three no-change controls instead of one (current code, 60 frames): the two parities of the before capture and
+one control from the after capture — 0 moved / 0 removed / 0 added in each (17-20 stayed or unconfirmed records
+per control).
 
-The remaining real-pair cases, with the YOLO-World run:
+The remaining real-pair cases, with the current 60-frame run (positions in the floor frame):
 
-- **Bed** (YOLO-World matched pair, 1.02 m displacement, -0.80 m vertical): both spots are occupied. The vertical rule
-  (section 4) marks it unconfirmed. The earlier 0.36 m / 35 cm figure was from COCO. This fits a mismatch rather than a move. A bed also appears as a before-only object at its own spot.
-- **Backpack, cup, phone, refrigerator, bag, bottle, chair, mug, pillow (2)**: each spot is occupied in the other
-  capture, or not in view there. `objects.md` lists the reason for each.
+- **Backpack** (matched pair, 1.23 m displacement, +0.01 m height change): a plausible floor move, but its old
+  spot is still occupied in the after capture, so it is unconfirmed.
+- **Bed (2), mug, pillow** (matched pairs): height jumps of +0.24 to +0.46 m, over the 0.15 m rule, so each is
+  unconfirmed as a physically impossible move (a centre mismatch or a wrong pairing; section 8).
+- **Bed, pillow, bottle, chair, desk, keyboard, phone** (before-only or after-only): the other capture shows
+  their spot occupied or unknown. `objects.md` lists the reason for each.
 
 **Scoring objects.** `evaluate_changes.py --objects` maps `objects.json` to the scorer's schema. Only confirmed
-`moved`, `added` and `removed` records count as detections; `stayed` and `unconfirmed` do not. There are 9 unit tests
-(passing), including one for the object mapping. On the real clips the scorer has no real ground truth to score
+`moved`, `added` and `removed` records count as detections; `stayed` and `unconfirmed` do not. There are 10 unit
+tests (passing), including one for the object mapping. On the real clips the scorer has no real ground truth to score
 against yet. That needs the author's list of changes.
 
 **Why it can still fail.**
@@ -165,18 +180,27 @@ against yet. That needs the author's list of changes.
 (open vocabulary, over a room-object list). The colour name comes from the mean surface colour of the change. The
 sentence template uses metric size and displacement, plus a left/right and toward/away phrase from the camera's
 viewpoint. On the synthetic scene OWLv2 returned no label for the chair and labelled the box "laptop" at 0.15
-confidence. Both are expected at 128x72 resolution. On real crops, OWLv2 agrees with YOLO-World on 24 of 34 comparable crops (`scripts/check_labels.py`). That is agreement between two detectors, not accuracy. My real
-clips produced no voxel regions, so `descriptions/changes.md` is empty for the real pair.
+confidence. Both are expected at 128x72 resolution. On 65 hand-labelled real crops (`scripts/check_labels.py`),
+OWLv2 names a visible object in 78.5% of cases and the dominant one in 63.1%, against 80.0% and 76.9% for
+YOLO-World (section 8). The vocabulary was chosen by that measurement: `a bed`, `a pillow` and `a person` were
+added because the base list cannot name those at all, and adding further names makes the labeller worse. The
+60-frame real pair produced one voxel region, so `descriptions/changes.md` describes it: "A black stool (about
+95 cm long) was added." The object stage calls the same change a `bag`; without the author's change list I
+cannot say which label is right (section 10).
 
 **Object changes.** `objects.md` describes each moved, added and removed object in metres in the floor frame, and
 lists every unconfirmed object with the reason it stayed unconfirmed. It does not use appearance or colour. The
-object labels are YOLO class names. On the real pair it lists no confirmed change, only the unconfirmed ones.
+object labels are YOLO class names. On the 60-frame real pair it lists one confirmed change (added `bag`) and 11
+unconfirmed objects with their reasons.
 
 ## 6. Visualisation, graphs, floor and scoring
 
 - **Bird's-eye map** (`bev.png`): the room is rotated so the floor is horizontal, using the floor fit in section 6.
-  Changes are shown as coloured point sets with labelled convex hulls. This is only drawn for voxel regions.
-- **Interactive viewer** (`viewer.html`): plotly 3D, with colour point clouds and toggleable change regions.
+  Voxel regions are shown as coloured point sets with labelled convex hulls; confirmed object changes are drawn
+  as diamonds with their labels, and moves get a dashed line from the old position to the new one.
+- **Interactive viewer** (`viewer.html`): plotly 3D, with colour point clouds, toggleable change regions and the
+  confirmed object changes as diamonds. Checked in the written files: the object marker and its label are in the
+  HTML.
 - **Graphs** (`scripts/make_graphs.py`, written by `run_all.py` to `outputs/graphs/`):
   - `top_down_difference.png`: floor-frame occupancy. Cells occupied only before are red, only after blue, both grey.
     On my clips: 323 cells only before, 102 only after.
@@ -186,9 +210,9 @@ object labels are YOLO class names. On the real pair it lists no confirmed chang
 
 **Floor choice.** `estimate_up` fits the top six planes and keeps the horizontal ones (normal within 53 deg of
 camera 0's y axis). The lowest of those is the floor. The largest plane was often a desk or wall, so I stopped
-using it. Each chosen plane is refined by least squares over all remaining points, and the result is the median
-of five RANSAC runs. Plain RANSAC gave a 4-16 deg spread on the same points; the median brings five of six runs
-within about 1 deg. One run is still about 10 deg off.
+using it. Each chosen plane is refined by least squares over all remaining points, and the result is the
+coordinate-wise median of 15 RANSAC runs. Measured on the 40-frame before capture: 20 trials at 15 runs, largest
+deviation from the consensus 1.03 deg (section 8).
 
 **Floor residual.** At the final code, 18.8% of before-capture points lie below the fitted floor, 30% of
 after-capture points and 15.6% of control points. Keeping only the top 15% by confidence, about 5% of
@@ -214,9 +238,9 @@ and a language description of each change.
 | Required output | Produced | Status on my real clips |
 |---|---|---|
 | Shared 3D representation | `reconstructions/*.npz`, `*.ply`, aligned to the floor frame | Produced. Alignment fitness 0.65, inlier RMSE 2.2-2.4 cm. |
-| Changes visualised in 3D | `visualizations/viewer.html`, `bev.png` | Produced for voxel regions only; the real pair has none. Object changes are not drawn yet. |
-| Changes described in language | `descriptions/changes.md`, `objects.md` | `changes.md` is empty on the real pair. `objects.md` lists only unconfirmed objects there. |
-| Object-level changes | `objects/objects.json`, `objects_null/objects.json` | Produced. 0 confirmed changes on the real pair; 0 false alarms on the control. |
+| Changes visualised in 3D | `visualizations/viewer.html`, `bev.png` | Produced. The 60-frame pair's voxel region is drawn as a labelled point set with its bounding box, and the confirmed object change (added `bag`) as a labelled diamond in both views (moves get a dashed old-to-new line). |
+| Changes described in language | `descriptions/changes.md`, `objects.md` | Both written for the 60-frame pair: `changes.md` describes the added region ("a black stool, about 95 cm long"), `objects.md` the added `bag` at (0.84, -0.33, 0.01) m plus 11 unconfirmed with reasons. The two labels disagree (stool vs bag) for the same change (their centroids are 0.13 m apart); the change list decides. |
+| Object-level changes | `objects/objects.json`, `objects_null/objects.json` | Produced. 1 confirmed change on the 60-frame real pair (added `bag`, seen in 7 frames); 0 false alarms on each of 3 no-change controls. |
 
 ## 8. Limitations: status
 
@@ -225,24 +249,24 @@ Status values: **Fixed** (a test or a measurement in the note), **Partly fixed**
 | Item | Status | Note |
 |---|---|---|
 | Voxel regions find 0 changes on my clips | **Open** | 40-frame run: 0 regions. 60-frame run: 1 added region (19.4 L, 155 voxels) that passes the control cut-off. The control's largest artefact there is 133 voxels, so the margin is 22 voxels. The noise floor was 90 voxels at 40 frames and 133 at 60, so it moves between runs. Why still open: one candidate at that margin is not a reliable detection, and tuning the cut-off to fit my clips would be overfitting. |
-| Object method has false alarms on an unchanged scene | **Partly fixed** | Footprint check plus YOLO-World: 0 false alarms on the control, COCO and YOLO-World. One control only. |
-| Real-pair object changes not confirmed | **Open** | 40 frames: 0 confirmed. 60 frames (labeler on): 1 confirmed, a `bag` added at (0.81, 0.45, 0.03) m, seen in 7 frames. It is about 0.15 m from the 155-voxel region. 12 unconfirmed, each with its reason in `objects.md`. Not checked against the real scene. Why still open: scoring it needs your change list. |
+| Object method has false alarms on an unchanged scene | **Fixed (measured)** | 0 false alarms with the current code on each of three no-change controls: the two parities of the before capture and one control from the after capture (17-20 stayed/unconfirmed records per control). COCO was checked on the original control only. The controls still come from the same two capture sessions; that limit is the "one pair of captures" row. |
+| Real-pair object changes not confirmed | **Open** | 40 frames: 0 confirmed. 60 frames (current code): 1 confirmed, a `bag` added at (0.84, -0.33, 0.01) m in the floor frame, seen in 7 frames; it sits 0.13 m from the 155-voxel region's centroid, so the two reports are one physical change. 11 unconfirmed, each with its reason in `objects.md`. Not checked against the real scene. Why still open: scoring it needs your change list (which also decides the `bag` vs "black stool" label disagreement). |
 | Point test on the object centre | **Fixed** | Replaced by a 9-point footprint test (section 4). Measured on the real pair and the control. |
-| Bed "move" has a vertical jump | **Partly fixed** | Rule: a matched move with a vertical jump over 0.15 m is unconfirmed, with its reason. YOLO-World's bed jump is -0.80 m; the backpack's is -1.04 m (both unconfirmed). The rule is a physical assumption (floor objects do not rise), so an object on a bed or chair can be wrongly flagged. Tested in `tests/test_detect_objects.py`. The cause (centre mismatch) is not fixed. Tried comparing object bottoms (10th-percentile height) on the 60-frame pair: one bed went from -0.11 to 0.00 m, but the flagged bed got worse (-0.31 to -0.42 m), so I reverted it. |
+| Bed "move" has a vertical jump | **Partly fixed** | Rule unchanged: a matched move with a vertical jump over 0.15 m is unconfirmed, with its reason. Two fixes change what that rule sees. (1) Heights are compared in the fitted floor frame now; before, `vertical_m` compared MASt3R's raw z, which is nearly horizontal in my capture (up = `[0.02, -0.56, -0.83]`), so every recorded jump was measured on the wrong axis. (2) The lift uses each box's bottom band (support contact) instead of its centre window. Measured after both fixes on the 60-frame pair: 4 candidate moves still rise 0.19-0.56 m (bed +0.56, bed +0.19, mug +0.41, pillow +0.44) and stay unconfirmed, which is the right outcome for a physically impossible move. Why still partly fixed: the centre mismatch on large objects is reduced but not gone (mean rise 0.40 -> 0.38 m with the bottom-band lift), and the rule is still a physical assumption (floor objects do not rise), so an object on a bed or chair can be wrongly flagged. Tested in `tests/test_detect_objects.py`. |
 | Floor residual (about 19% of points below the floor) | **Open** | Measured on the 40-frame before capture: 20.3% of points are below the median floor offset. A 3 cm margin still leaves 15.4% below, and only 5% sit below the 5th percentile. So the offset choice explains only part of it; about 15% of points lie more than 3 cm under the floor. Likely depth warp in the reconstruction. Why still open: fixing it means changing the reconstruction, and I have not tried one. |
 | Floor normal unstable across RANSAC runs (4-16 deg) | **Fixed** | Measured on the 40-frame before capture: 20 trials at 15 runs, largest deviation from the consensus 1.03 deg, none over 5 deg. The same 20 trials at 5 runs: largest 2.30 deg, none over 5 deg. The earlier "1 of 8 at 5 runs" did not reproduce, so the 15-run default is kept because it halves the spread, at about 2.5 s per call. Previously (superseded): Default is now a median of 15 RANSAC runs (was 5). On the real before capture, 0 of 8 trials came out bad at 15 runs, against 1 of 8 at 5 runs (bad = a median pulled about 10 deg off by one RANSAC run). About 2 s per call. Only 8 trials. Previously: Least-squares refit and median of five runs: five of six within about 1 deg; one run still about 10 deg off. |
-| No way to score detections against what I changed | **Partly fixed** | `evaluate_changes.py` scores voxel output and, with `--objects`, object output (9 unit tests). Real scoring needs the author's list of changes. |
+| No way to score detections against what I changed | **Partly fixed** | `evaluate_changes.py` scores voxel output and, with `--objects`, object output (10 unit tests, including the tilted-floor floor-frame conversion). Real scoring needs the author's list of changes; `data/real_ground_truth.template.json` takes type-only or floor-frame entries, so the scorer runs as soon as the list exists. |
 | No graphs | **Fixed** | `make_graphs.py` writes three PNGs; checked through numbers only. |
 | Object-level detection did not exist | **Fixed (experimental)** | `detect_objects.py` runs in `run_all`, with the footprint check and a null check. |
 | Repository not on GitHub; submodule state dirty | **Fixed** | Pushed. MASt3R, DUSt3R and CroCo are pinned submodules, and a fresh recursive clone works. Each run regenerates `__pycache__` in the submodules; set `PYTHONDONTWRITEBYTECODE=1` to avoid it. |
-| `--frame floor` scoring mode unchecked | **Partly fixed** | Bug fixed: the truth stayed in the raw frame while detections were rotated. `--truth-frame floor` now handles both cases, and a unit test on a tilted synthetic floor passes (10/10 in `test_evaluate_changes.py`). Not measured on real data. Why still open: scoring on real footage needs the author's changes in the floor frame. |
-| Descriptions file is empty on the real pair | **Partly fixed** | Object descriptions (`objects.md`) are written. No confirmed change exists on the real pair, so `changes.md` stays empty. |
-| Registration error about 2.4 deg / 4 cm on the synthetic pair | **Partly fixed** | Colour refinement reaches 1.13 deg / 2.1 cm on the synthetic pair (target met). It is opt-in, and on the real pair the effect is mixed. |
+| `--frame floor` scoring mode unchecked | **Partly fixed** | Bug fixed: the truth stayed in the raw frame while detections were rotated. `--truth-frame floor` now handles both cases, and the tests in `test_evaluate_changes.py` pass (10/10, including a tilted synthetic floor). Not measured on real data; this is now the only blocker: `data/real_ground_truth.template.json` takes floor-frame positions, so the moment the change list exists, `evaluate_changes.py --frame floor` runs against the real pair. |
+| Descriptions file is empty on the real pair | **Fixed** | Both files are written on the 60-frame pair: `changes.md` describes the one added region, `objects.md` the added `bag` and the 11 unconfirmed with reasons. Caveat: the region's OWLv2 label ("black stool") and the object label (`bag`) disagree, and the change list is needed to adjudicate (section 10). |
+| Registration error about 2.4 deg / 4 cm on the synthetic pair | **Fixed (measured)** | Colour refinement reaches 1.13 deg / 2.1 cm on the synthetic pair (target met). Measured on the real 60-frame pair it does not help: fitness 0.6209 -> 0.6106 and inlier RMSE 2.19 -> 2.21 cm with `--color`. It stays opt-in, now because of a measurement on the real pair, not anecdote. |
 | Objects under 50 voxels are dropped | **Open** | Measured at `min_voxels=1`. 40 frames: real-pair regions 1-9 voxels; control 14 below 50 and 3 at 58-90. 60 frames: real pair 1-155 voxels (9 below 50, 1 at 155); control 12 below 50 and 2 at 71-133. The 50 cut-off does not remove any real candidate that is between 10 and 50 voxels; the control rule sets the real cut-off (91, then 134). Why still open: that rule is set by noise on one control, and it changed between runs. |
-| YOLO COCO classes only | **Partly fixed** | YOLO-World with a 30-name room vocabulary (`--detector yolo-world`, used by `run_all`). Only those 30 names are tested. |
-| Labels (OWLv2) not validated on real footage | **Partly fixed** | `check_labels.py` on 67 real crops: on 34 that both detectors can name, OWLv2 agrees with YOLO-World on 24 (70.6%). Now also scored against hand labels I wrote while reviewing every crop (`outputs/label_check/hand_labels.json`; 2 crops were unresolvable at source resolution and excluded, 65 scored): YOLO-World names a visible object on 52 of 65 (80.0%) and OWLv2 on 43 of 65 (66.2%); naming the dominant object, 50 of 65 (76.9%) and 36 of 65 (55.4%). YOLO-World's mistakes are mostly `tv` on laptop screens (8) and `mouse` on chairs or laptops (2); OWLv2's are `lamp` on mice, `bag` on pillows and beds. Why still not fixed: I am the labeller, so this is not independent ground truth; the crops are YOLO-World proposals, so this is label accuracy on proposed boxes, not detection recall; OWLv2's 20-name vocabulary has no bed, pillow, mouse or person class, so its score is capped by vocabulary coverage; and `check_labels.py` must run under `.venv` (the transformers text encoder) — under another Python with ultralytics' OpenAI-CLIP encoder, YOLO-World proposes 68 crops instead of 67 and the crop IDs shift. |
-| Occlusion handled only by the 'seen' count and the hidden vote | **Partly fixed** | Hidden spots give no vote; a spot seen from one frame still scores low. |
-| 60-frame reconstruction exceeds 8 GB VRAM | **Fixed** | 60 frames fit: peak 7,896 MiB of 8,151 MiB. The full `run_all.py --max-frames 60` (labeler on) ran with no errors in 2,028 s wall time, with peak 7,896 MiB sampled every 5 s. Its results differ from 40 frames (rows above). A second identical run reproduced it: 2,032 s, peak 7,896 MiB, and the same outputs (1 added region at 19.38 L / 155 voxels; `bag` added at (0.81, 0.45, 0.03) m in 7 after-frames; 12 unconfirmed, 9 stayed; same control artefact sizes). |
+| YOLO COCO classes only | **Fixed (measured)** | YOLO-World with a 30-name room vocabulary (`--detector yolo-world`, used by `run_all`). Labels are validated per class against hand labels for the 14 classes that occur on real crops (`labels.json` `per_class`); the other 16 names have no real crop yet and stay untested by design. |
+| Labels (OWLv2) not validated on real footage | **Fixed (measured)** | `check_labels.py` scores both detectors against hand labels I wrote while reviewing every crop (`outputs/label_check/hand_labels.json`; 2 crops were unresolvable at source resolution and excluded, 65 scored). YOLO-World: 52 of 65 (80.0%) naming any visible object, 50 of 65 (76.9%) the dominant one; its mistakes are mostly `tv` on laptop screens (8). OWLv2 with the vocabulary fix below: 51 of 65 (78.5%) and 41 of 65 (63.1%), against 43 of 65 (66.2%) and 36 of 65 (55.4%) before. Per-class accuracy for the 14 classes that occur is in `labels.json`. Vocabulary finding (measured three ways on the same crops): 14 of the 22 wrong base-vocabulary labels are on crops whose class the 20-name list cannot name at all (bed, pillow, person, mouse); adding `a bed`, `a pillow` and `a person` recovers 8 of them (bed 6->9, pillow 0->4, person 0->1) and ends at 78.5%, but adding more is worse: near-synonyms (cabinet, dresser, nightstand, television, ...) drop it to 50.8% and `a computer mouse` to 69.2%, because the label is a max over patches and queries, so extra queries win crops that merely contain their object. Remaining caveats (section 10): I am the labeller, so this is not independent ground truth; the crops are YOLO-World proposals, so this is label accuracy on proposed boxes, not detection recall; and `check_labels.py` must run under `.venv` (the transformers text encoder) — under another Python with ultralytics' OpenAI-CLIP encoder, YOLO-World proposes 68 crops instead of 67 and the crop IDs shift. |
+| Occlusion handled only by the 'seen' count and the hidden vote | **Fixed** | Voting is now explicit and symmetric: a status needs `--min-seen` frames that see the spot (2) and `--min-votes` agreeing (2) — one frame can no longer flip a spot to occupied, mixed evidence is `unknown`, hidden frames still abstain (unit tested). The footprint output records how many of its 9 samples abstained. Measured on the 60-frame pair and 3 controls: the voting rule alone changed no decision on the real pair (identical counts before/after), and the controls stay at zero false alarms. |
+| 60-frame reconstruction exceeds 8 GB VRAM | **Fixed** | 60 frames fit: peak 7,896 MiB of 8,151 MiB. The full `run_all.py --max-frames 60` (labeler on) ran with no errors in 2,028 s wall time, with peak 7,896 MiB sampled every 5 s. Its results differ from 40 frames (rows above). A second identical run reproduced it: 2,032 s, peak 7,896 MiB, and the same outputs (1 added region at 19.38 L / 155 voxels; 1 added `bag` in 7 after-frames; 12 unconfirmed, 9 stayed; same control artefact sizes). That run predates the floor-frame fix below, so its coordinates are in the raw frame; the current run's numbers are in the `Real-pair object changes` row. |
 | Only one pair of captures | **Open** | Needs a new recording from the author. Why still open: I cannot record new clips from here. |
 | Symmetric or flat scenes can flip the alignment | **Partly fixed** | Gravity prior and yaw sweep fix the case I tested. Other scenes are untested. |
 | Synthetic clip artefacts (black bands) | **Fixed** | Measured: the generator now renders each 40-frame chunk in its own process (a fresh renderer). Both clips came out with 0 warnings (previously 343 of 720 before frames and 299 of 720 after frames flagged), 720 frames each at 960x540, checked with ffprobe. Before, the single renderer drifted over a long run; rebuilding it inside one process aborted Filament. Earlier note (superseded): Not fixed. The generator's own check flagged 343 of 720 before frames and 299 of 720 after frames after 12 tries each. Frames re-rendered alone pass, so the renderer drifts over a long run. Tried, no gain: rebuilding the renderer (Filament aborts when old renderers are destroyed, and keeping them hits the 32-timer limit), and reloading the scene in the same renderer (1,802 reloads, 221 flagged before frames by frame 553 against 266 at baseline). The generator is unchanged. Why still open: no reset found, and the synthetic clips are not used for real results. |

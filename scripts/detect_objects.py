@@ -41,6 +41,7 @@ from PIL import Image
 from scipy.optimize import linear_sum_assignment
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 MODEL = ROOT / "models" / "yolov8n.pt"
 WORLD_MODEL = ROOT / "models" / "yolov8s-worldv2.pt"
 # Open-vocabulary prompts for YOLO-World: room objects that COCO does not name (desk, mug, pillow, book, ...).
@@ -64,8 +65,12 @@ def frame_paths(frames_dir: Path, max_frames: int) -> list[Path]:
 
 
 def observations(recon: dict, files: list[Path], model, device, min_conf: float,
-                 inner: float = 0.4, conf_q: float = 0.5) -> list[dict]:
-    """Lift each confident YOLO box to a 3D point (median of its inner region's confident pointmap points)."""
+                 inner: float = 0.4, conf_q: float = 0.5, lift: str = "base") -> list[dict]:
+    """Lift each confident YOLO box to a 3D point (median of confident pointmap points in a window).
+
+    lift="base" samples the bottom band of the box (the object's support contact), which stays at the
+    same height when the viewpoint changes; lift="inner" samples the box centre, which drifts between
+    views on large objects (a bed's centre is mattress in one view and headboard in another)."""
     H, W = recon["conf"].shape[1:]
     out = []
     for i, f in enumerate(files):
@@ -83,7 +88,10 @@ def observations(recon: dict, files: list[Path], model, device, min_conf: float,
             cx, cy = (x1 + x2) / 2 * sx, (y1 + y2) / 2 * sy
             hw, hh = (x2 - x1) * sx * inner / 2, (y2 - y1) * sy * inner / 2
             x0, x1i = max(0, int(cx - hw)), min(W, int(cx + hw) + 1)
-            y0, y1i = max(0, int(cy - hh)), min(H, int(cy + hh) + 1)
+            if lift == "base":
+                y0, y1i = max(0, int(y2 * sy - 2 * hh)), min(H, int(y2 * sy) + 1)
+            else:
+                y0, y1i = max(0, int(cy - hh)), min(H, int(cy + hh) + 1)
             P = recon["points"][i][y0:y1i, x0:x1i].reshape(-1, 3)
             K = conf_map[y0:y1i, x0:x1i].reshape(-1)
             ok = np.isfinite(P).all(1) & (K >= thr)
@@ -147,8 +155,24 @@ def project(X: np.ndarray, w2c: np.ndarray, focal: float, H: int, W: int):
     return int(round(u)), int(round(v)), float(z)
 
 
+def vote_status(empty: int, occupied: int, seen: int, min_votes: int, min_seen: int = 2) -> str:
+    """empty / occupied / unknown from per-frame votes.
+
+    A status needs `min_seen` frames that saw the spot and `min_votes` of them agreeing, so no single
+    frame decides: one occupied vote among empties is 'unknown', not 'occupied'. Mixed evidence is
+    'unknown' too. Hidden frames give no vote and are not counted in `seen`.
+    """
+    if seen < min_seen:
+        return "unknown"
+    if occupied == 0 and empty >= min_votes:
+        return "empty"
+    if empty == 0 and occupied >= min_votes:
+        return "occupied"
+    return "unknown"
+
+
 def spot_status(X: np.ndarray, other: dict, Z: np.ndarray, margin: float, radius: float,
-                min_votes: int) -> dict:
+                min_votes: int, min_seen: int = 2) -> dict:
     """Look at world point X from every frame of the other capture and vote empty / occupied / hidden.
 
     The ray through X reaches the surface behind it (depth > z + margin): X is empty in that frame.
@@ -172,12 +196,7 @@ def spot_status(X: np.ndarray, other: dict, Z: np.ndarray, margin: float, radius
             empty += 1
         elif zo >= zx - radius:
             occupied += 1
-    if occupied == 0 and empty >= min_votes:
-        status = "empty"
-    elif occupied > 0:
-        status = "occupied"
-    else:
-        status = "unknown"
+    status = vote_status(empty, occupied, seen, min_votes, min_seen)
     return {"status": status, "empty": empty, "occupied": occupied, "seen": seen}
 
 
@@ -190,7 +209,8 @@ def footprint_status(X: np.ndarray, other: dict, Z: np.ndarray, args) -> dict:
     """
     samples = [X] + [X + np.array([args.footprint * np.cos(t), args.footprint * np.sin(t), 0.0])
                      for t in np.linspace(0, 2 * np.pi, 8, endpoint=False)]
-    votes = [spot_status(s, other, Z, args.margin, args.radius, args.min_votes)["status"] for s in samples]
+    votes = [spot_status(s, other, Z, args.margin, args.radius, args.min_votes, args.min_seen)["status"]
+             for s in samples]
     n_empty, n_occ = votes.count("empty"), votes.count("occupied")
     voting = n_empty + n_occ
     if voting < 3:
@@ -201,7 +221,8 @@ def footprint_status(X: np.ndarray, other: dict, Z: np.ndarray, args) -> dict:
         status = "empty"
     else:
         status = "unknown"
-    return {"status": status, "empty_samples": n_empty, "occupied_samples": n_occ, "samples": len(samples)}
+    return {"status": status, "empty_samples": n_empty, "occupied_samples": n_occ,
+            "unknown_samples": len(samples) - voting, "samples": len(samples)}
 
 
 def pair_objects(before: list[dict], after: list[dict], max_move_m: float):
@@ -237,18 +258,37 @@ def vertical_reason(vertical_m: float, max_vertical: float) -> str | None:
     return f"vertical jump {vertical_m:+.2f} m (floor objects do not rise; likely a centre mismatch)"
 
 
+def to_floor_xyz(xyz, R: np.ndarray, shift: float) -> np.ndarray:
+    """Map a recon-frame point into the floor frame (fitted floor at z = 0, z up).
+
+    MASt3R's frame is arbitrary (in the real capture 'up' is mostly along raw -z), so height
+    comparisons and reported positions must use this frame, not the recon frame.
+    """
+    q = R @ np.asarray(xyz, dtype=float)
+    q[2] += shift
+    return q
+
+
 def classify(before: list[dict], after: list[dict], rec_b: dict, rec_a: dict,
-             Zb: np.ndarray, Za: np.ndarray, args) -> list[dict]:
-    """Turn matched and unmatched objects into stayed / moved / removed / added / unconfirmed records."""
+             Zb: np.ndarray, Za: np.ndarray, args, to_floor=None) -> list[dict]:
+    """Turn matched and unmatched objects into stayed / moved / removed / added / unconfirmed records.
+
+    Positions and vertical_m are reported in the floor frame (pass `to_floor`); the footprint checks
+    stay in the recon frame, where the camera poses live.
+    """
     def check(X, other, Z):
         return footprint_status(X, other, Z, args)
+
+    def floor(xyz):
+        return np.asarray(xyz) if to_floor is None else to_floor(xyz)
 
     out = []
     pairs, ub, ua = pair_objects(before, after, args.max_move)
     for b, a, d in pairs:
+        fb, fa = floor(b["xyz"]), floor(a["xyz"])
         rec = {"cls": b["cls"], "displacement_m": round(d, 3),
-               "vertical_m": round(float(a["xyz"][2] - b["xyz"][2]), 3),
-               "before_xyz": np.round(b["xyz"], 3).tolist(), "after_xyz": np.round(a["xyz"], 3).tolist(),
+               "vertical_m": round(float(fa[2] - fb[2]), 3),
+               "before_xyz": np.round(fb, 3).tolist(), "after_xyz": np.round(fa, 3).tolist(),
                "frames_before": b["frames"], "frames_after": a["frames"]}
         if d < args.same:
             out.append({**rec, "kind": "stayed"})
@@ -264,13 +304,13 @@ def classify(before: list[dict], after: list[dict], rec_b: dict, rec_a: dict,
         s = check(b["xyz"], rec_a, Za)
         kind = "removed" if s["status"] == "empty" else "unconfirmed"
         out.append({"cls": b["cls"], "kind": kind, "side": "before only", "displacement_m": None,
-                    "before_xyz": np.round(b["xyz"], 3).tolist(), "after_xyz": None,
+                    "before_xyz": np.round(floor(b["xyz"]), 3).tolist(), "after_xyz": None,
                     "frames_before": b["frames"], "frames_after": 0, "spot_in_after": s})
     for a in ua:
         s = check(a["xyz"], rec_b, Zb)
         kind = "added" if s["status"] == "empty" else "unconfirmed"
         out.append({"cls": a["cls"], "kind": kind, "side": "after only", "displacement_m": None,
-                    "before_xyz": None, "after_xyz": np.round(a["xyz"], 3).tolist(),
+                    "before_xyz": None, "after_xyz": np.round(floor(a["xyz"]), 3).tolist(),
                     "frames_before": 0, "frames_after": a["frames"], "spot_in_before": s})
     return out
 
@@ -305,7 +345,7 @@ def describe_objects(changes: list[dict]) -> str:
 
 
 def side_objects(recon: dict, files: list[Path], model, device, args) -> list[dict]:
-    obs = observations(recon, files, model, device, args.min_conf)
+    obs = observations(recon, files, model, device, args.min_conf, lift=args.lift)
     return cluster(obs, args.merge, args.min_frames), len(obs)
 
 
@@ -328,7 +368,10 @@ def main() -> int:
     ap.add_argument("--max-move", type=float, default=4.0, help="metres: matches farther than this are not the same object")
     ap.add_argument("--margin", type=float, default=0.15, help="metres: depth gap that counts as empty space")
     ap.add_argument("--radius", type=float, default=0.4, help="metres: a surface this far in front of a spot hides it")
-    ap.add_argument("--min-votes", type=int, default=2, help="frames that must see a spot as empty")
+    ap.add_argument("--min-votes", type=int, default=2, help="frames that must agree on a spot's status")
+    ap.add_argument("--min-seen", type=int, default=2, help="frames that must see a spot before its status counts")
+    ap.add_argument("--lift", choices=["base", "inner"], default="base",
+                    help="3D point for a box: base = bottom band (view-stable height), inner = box centre")
     ap.add_argument("--footprint", type=float, default=0.15, help="metres: radius of the footprint ring around each object centre")
     ap.add_argument("--max-vertical", type=float, default=0.15,
                     help="metres: a candidate move with a larger vertical jump is unconfirmed (floor objects do not rise)")
@@ -348,7 +391,14 @@ def main() -> int:
     before, n_b = side_objects(rec_b, frame_paths(args.before_frames, args.max_frames), model, device, args)
     after, n_a = side_objects(rec_a, frame_paths(args.after_frames, args.max_frames), model, device, args)
     Zb, Za = depth_maps(rec_b), depth_maps(rec_a)
-    changes = classify(before, after, rec_b, rec_a, Zb, Za, args)
+    # report in the fitted floor frame: MASt3R's frame has an arbitrary up, so height rules and
+    # published positions must be gravity-aligned (same frame as bev.png and evaluate_changes --frame floor)
+    from registration.align import surface_points
+    from visualization.plots import floor_transform
+    pts_b, _ = surface_points(rec_b)
+    R, shift = floor_transform(pts_b, rec_b["c2w"][0])
+    changes = classify(before, after, rec_b, rec_a, Zb, Za, args,
+                       to_floor=lambda xyz: to_floor_xyz(xyz, R, shift))
 
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "objects.json").write_text(json.dumps(changes, indent=2))

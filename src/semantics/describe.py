@@ -15,7 +15,13 @@ import numpy as np
 OWL_MODEL = "google/owlv2-base-patch16-ensemble"
 VOCAB = ["a chair", "a backpack", "a potted plant", "a bottle", "a cardboard box", "a desk",
          "a stool", "a lamp", "a bag", "a laptop", "a mug", "a book", "a shoe", "a cup",
-         "a table", "a box", "a plant pot", "a pair of shoes", "a jacket", "a water bottle"]
+         "a table", "a box", "a plant pot", "a pair of shoes", "a jacket", "a water bottle",
+         # the classes the real crops actually contain and the base vocabulary cannot name (they cost
+         # 13 correct labels on 65 hand-labelled crops). More is not better: scores are a max over
+         # patches and queries, so extra queries steal votes from the dominant object. Measured on the
+         # 65 crops (DESIGN.md): cabinet/dresser/television-style near-synonyms drop accuracy 0.66 -> 0.51,
+         # and 'a computer mouse' drops it to 0.69 (it wins every desk crop that contains a mouse).
+         "a bed", "a pillow", "a person"]
 
 _COLOURS = {
     "black": (0.08, 0.08, 0.09), "white": (0.92, 0.92, 0.92), "grey": (0.5, 0.5, 0.5),

@@ -17,17 +17,19 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("frames", type=Path, help="frames directory with manifest.json")
     ap.add_argument("out", type=Path, help="output frames directory")
+    ap.add_argument("--parity", choices=["odd", "even"], default="odd",
+                    help="which frames to keep: odd (default) or even indices; two parities give two independent controls")
     args = ap.parse_args()
 
     man = json.loads((args.frames / "manifest.json").read_text())
     args.out.mkdir(parents=True, exist_ok=True)
     kept = []
     for i, f in enumerate(man["frames"]):
-        if i % 2 == 1:
+        if i % 2 == (1 if args.parity == "odd" else 0):
             shutil.copy(args.frames / f["file"], args.out / f["file"])
             kept.append(f)
     (args.out / "manifest.json").write_text(json.dumps({"frames": kept}, indent=2))
-    print(f"control: {len(kept)} frames -> {args.out}")
+    print(f"control ({args.parity}): {len(kept)} frames -> {args.out}")
 
 
 if __name__ == "__main__":

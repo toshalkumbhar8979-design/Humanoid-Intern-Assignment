@@ -30,6 +30,9 @@ def main():
     ap.add_argument("after", type=Path)
     ap.add_argument("changes", type=Path)
     ap.add_argument("--descriptions", type=Path, default=None, help="changes.json from describe_changes.py")
+    ap.add_argument("--objects", type=Path, default=None,
+                    help="objects.json from detect_objects.py; confirmed object changes are drawn as diamonds "
+                         "(already in the floor frame)")
     ap.add_argument("--out", type=Path, default=ROOT / "outputs" / "visualizations")
     args = ap.parse_args()
 
@@ -56,9 +59,14 @@ def main():
     b_pts_f, a_pts_f = to_floor(b_pts), to_floor(a_pts)
     changes_f = transform_changes(changes, R, shift)
 
+    objs = []
+    if args.objects and args.objects.exists():
+        objs = [o for o in json.loads(args.objects.read_text())
+                if o.get("kind") in ("moved", "added", "removed")]
+
     args.out.mkdir(parents=True, exist_ok=True)
-    bev_png(b_pts_f, a_pts_f, changes_f, labels, args.out / "bev.png")
-    viewer_html(b_pts_f, b_cols, a_pts_f, a_cols, changes_f, labels, args.out / "viewer.html")
+    bev_png(b_pts_f, a_pts_f, changes_f, labels, args.out / "bev.png", objects=objs)
+    viewer_html(b_pts_f, b_cols, a_pts_f, a_cols, changes_f, labels, args.out / "viewer.html", objects=objs)
     print(f"wrote {args.out / 'bev.png'} and {args.out / 'viewer.html'}")
 
 

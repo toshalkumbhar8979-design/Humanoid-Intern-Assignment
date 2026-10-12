@@ -58,8 +58,12 @@ def transform_changes(changes, R: np.ndarray, shift: float):
     return out
 
 
-def bev_png(before_pts: np.ndarray, after_pts: np.ndarray, changes, labels: dict, out_png: Path):
-    """Bird's-eye (x, y) change map. Inputs must already be in the floor frame."""
+def bev_png(before_pts: np.ndarray, after_pts: np.ndarray, changes, labels: dict, out_png: Path,
+            objects=None):
+    """Bird's-eye (x, y) change map. Inputs must already be in the floor frame.
+
+    `objects` (optional) are confirmed object changes from detect_objects.py, also in the floor frame.
+    """
     fig, ax = plt.subplots(figsize=(9, 7), dpi=160)
     ax.scatter(before_pts[:, 0], before_pts[:, 1], s=0.3, c="#8a9097", alpha=0.25, linewidths=0)
     ax.scatter(after_pts[:, 0], after_pts[:, 1], s=0.3, c="#b8c8dd", alpha=0.12, linewidths=0)
@@ -76,7 +80,21 @@ def bev_png(before_pts: np.ndarray, after_pts: np.ndarray, changes, labels: dict
         cx, cy = poly.mean(0)
         ax.annotate(f"#{c.id} {labels.get(c.id, c.kind)}", (cx, cy), fontsize=8, ha="center", va="bottom",
                     bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.85, lw=0))
+    for o in objects or []:
+        if o.get("kind") not in KIND_RGB:
+            continue
+        col = KIND_RGB[o["kind"]]
+        pts = [p for p in (o.get("before_xyz"), o.get("after_xyz")) if p]
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        if o["kind"] == "moved" and len(pts) == 2:
+            ax.plot(xs, ys, color=col, lw=1.2, ls="--")
+        ax.scatter(xs, ys, s=70, marker="D", color=col, edgecolors="white", linewidths=0.7, zorder=5)
+        ax.annotate(f"obj: {o['kind']} {o['cls']}", (xs[-1], ys[-1]), fontsize=7, ha="center", va="bottom",
+                    zorder=6, bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.85, lw=0))
     handles = [Patch(color=KIND_RGB[k], label=k) for k in KIND_RGB if any(c.kind == k for c in changes)]
+    if objects:
+        handles += [plt.Line2D([], [], marker="D", ls="", color="#333333",
+                              label="object changes")]
     handles += [Patch(color="#8a9097", alpha=0.5, label="before scene"),
                 Patch(color="#b8c8dd", alpha=0.5, label="after scene")]
     ax.legend(handles=handles, loc="upper right", fontsize=8, framealpha=0.9)
@@ -88,8 +106,12 @@ def bev_png(before_pts: np.ndarray, after_pts: np.ndarray, changes, labels: dict
     plt.close(fig)
 
 
-def viewer_html(before_pts, before_cols, after_pts, after_cols, changes, labels: dict, out_html: Path):
-    """Interactive 3D viewer: colour point clouds + coloured change regions with bounding boxes."""
+def viewer_html(before_pts, before_cols, after_pts, after_cols, changes, labels: dict, out_html: Path,
+                objects=None):
+    """Interactive 3D viewer: colour point clouds + coloured change regions with bounding boxes.
+
+    `objects` (optional) are confirmed object changes from detect_objects.py, also in the floor frame.
+    """
     import plotly.graph_objects as go
 
     def rgb(c):
@@ -116,6 +138,20 @@ def viewer_html(before_pts, before_cols, after_pts, after_cols, changes, labels:
             zs += [corners[i, 2], corners[j, 2], None]
         fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines", line=dict(color=col, width=6),
                                    name=name, legendgroup=name, showlegend=False))
+    for o in objects or []:
+        if o.get("kind") not in KIND_RGB:
+            continue
+        col = rgb([KIND_RGB[o["kind"]]])[0]
+        name = f"object: {o['kind']} {o.get('cls', '?')}"
+        pts = [p for p in (o.get("before_xyz"), o.get("after_xyz")) if p]
+        xs, ys, zs = [p[0] for p in pts], [p[1] for p in pts], [p[2] for p in pts]
+        if o["kind"] == "moved" and len(pts) == 2:
+            fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines",
+                                       line=dict(color=col, width=10, dash="dash"),
+                                       name=name, legendgroup=name, showlegend=False))
+        fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="markers",
+                                   marker=dict(size=6, color=col, symbol="diamond"),
+                                   name=name, legendgroup=name))
     fig.update_layout(
         title="What changed in the room - interactive view (click legend entries to toggle)",
         scene=dict(aspectmode="data", xaxis_title="x (m)", yaxis_title="y (m)", zaxis_title="height (m)"),
