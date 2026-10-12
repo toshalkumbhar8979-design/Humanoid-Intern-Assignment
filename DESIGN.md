@@ -240,9 +240,9 @@ Status values: **Fixed** (a test or a measurement in the note), **Partly fixed**
 | Registration error about 2.4 deg / 4 cm on the synthetic pair | **Partly fixed** | Colour refinement reaches 1.13 deg / 2.1 cm on the synthetic pair (target met). It is opt-in, and on the real pair the effect is mixed. |
 | Objects under 50 voxels are dropped | **Open** | Measured at `min_voxels=1`. 40 frames: real-pair regions 1-9 voxels; control 14 below 50 and 3 at 58-90. 60 frames: real pair 1-155 voxels (9 below 50, 1 at 155); control 12 below 50 and 2 at 71-133. The 50 cut-off does not remove any real candidate that is between 10 and 50 voxels; the control rule sets the real cut-off (91, then 134). Why still open: that rule is set by noise on one control, and it changed between runs. |
 | YOLO COCO classes only | **Partly fixed** | YOLO-World with a 30-name room vocabulary (`--detector yolo-world`, used by `run_all`). Only those 30 names are tested. |
-| Labels (OWLv2) not validated on real footage | **Partly fixed** | `check_labels.py` on 67 real crops: on 34 that both detectors can name, OWLv2 agrees with YOLO-World on 24 (70.6%). Agreement between two detectors, not accuracy against truth. Mug crops disagree (0 of 4). |
+| Labels (OWLv2) not validated on real footage | **Partly fixed** | `check_labels.py` on 67 real crops: on 34 that both detectors can name, OWLv2 agrees with YOLO-World on 24 (70.6%). Now also scored against hand labels I wrote while reviewing every crop (`outputs/label_check/hand_labels.json`; 2 crops were unresolvable at source resolution and excluded, 65 scored): YOLO-World names a visible object on 52 of 65 (80.0%) and OWLv2 on 43 of 65 (66.2%); naming the dominant object, 50 of 65 (76.9%) and 36 of 65 (55.4%). YOLO-World's mistakes are mostly `tv` on laptop screens (8) and `mouse` on chairs or laptops (2); OWLv2's are `lamp` on mice, `bag` on pillows and beds. Why still not fixed: I am the labeller, so this is not independent ground truth; the crops are YOLO-World proposals, so this is label accuracy on proposed boxes, not detection recall; OWLv2's 20-name vocabulary has no bed, pillow, mouse or person class, so its score is capped by vocabulary coverage; and `check_labels.py` must run under `.venv` (the transformers text encoder) — under another Python with ultralytics' OpenAI-CLIP encoder, YOLO-World proposes 68 crops instead of 67 and the crop IDs shift. |
 | Occlusion handled only by the 'seen' count and the hidden vote | **Partly fixed** | Hidden spots give no vote; a spot seen from one frame still scores low. |
-| 60-frame reconstruction exceeds 8 GB VRAM | **Fixed** | 60 frames fit: peak 7,896 MiB of 8,151 MiB. The full `run_all.py --max-frames 60` (labeler on) ran with no errors in 2,028 s wall time, with peak 7,896 MiB sampled every 5 s. Its results differ from 40 frames (rows above). |
+| 60-frame reconstruction exceeds 8 GB VRAM | **Fixed** | 60 frames fit: peak 7,896 MiB of 8,151 MiB. The full `run_all.py --max-frames 60` (labeler on) ran with no errors in 2,028 s wall time, with peak 7,896 MiB sampled every 5 s. Its results differ from 40 frames (rows above). A second identical run reproduced it: 2,032 s, peak 7,896 MiB, and the same outputs (1 added region at 19.38 L / 155 voxels; `bag` added at (0.81, 0.45, 0.03) m in 7 after-frames; 12 unconfirmed, 9 stayed; same control artefact sizes). |
 | Only one pair of captures | **Open** | Needs a new recording from the author. Why still open: I cannot record new clips from here. |
 | Symmetric or flat scenes can flip the alignment | **Partly fixed** | Gravity prior and yaw sweep fix the case I tested. Other scenes are untested. |
 | Synthetic clip artefacts (black bands) | **Fixed** | Measured: the generator now renders each 40-frame chunk in its own process (a fresh renderer). Both clips came out with 0 warnings (previously 343 of 720 before frames and 299 of 720 after frames flagged), 720 frames each at 960x540, checked with ffprobe. Before, the single renderer drifted over a long run; rebuilding it inside one process aborted Filament. Earlier note (superseded): Not fixed. The generator's own check flagged 343 of 720 before frames and 299 of 720 after frames after 12 tries each. Frames re-rendered alone pass, so the renderer drifts over a long run. Tried, no gain: rebuilding the renderer (Filament aborts when old renderers are destroyed, and keeping them hits the 32-timer limit), and reloading the scene in the same renderer (1,802 reloads, 221 flagged before frames by frame 553 against 266 at baseline). The generator is unchanged. Why still open: no reset found, and the synthetic clips are not used for real results. |
@@ -253,7 +253,26 @@ Status values: **Fixed** (a test or a measurement in the note), **Partly fixed**
 
 1. Score the object output and the voxel output against the changes I made on my clips, with `evaluate_changes.py`.
    I need the type and rough place of each change for that.
-2. Done: `run_all.py --max-frames 60` with the labeler on ran in 2,028 s, peak 7,896 MiB (section 8). Next, score the 60-frame `bag` and 155-voxel region against your change list.
-3. Check the OWLv2 labels against a hand-labelled set of real crops, so agreement becomes accuracy.
+2. Done twice: `run_all.py --max-frames 60` with the labeler on ran in 2,028 s and again in 2,032 s, both at peak 7,896 MiB with the same outputs (section 8). Next, score the 60-frame `bag` and 155-voxel region against your change list.
+3. Done: both detectors are scored against hand labels on 65 of the 67 real crops (section 8, labels row). Independent ground truth is still missing; see section 10.
 4. Record a second pair of captures with no changes, to measure repeatability beyond the control.
 5. Measure the floor-frame scoring mode with ground truth in the floor frame.
+
+## 10. Checks that could not run, or were not run
+
+The honest list of what is not measured, and why:
+
+- **Independent label ground truth.** The label accuracy in section 8 is against crops I labelled myself while
+  reviewing them with the detectors' output on screen. A check against labels written blind, by someone who is
+  not the agent, cannot run here. Two crops (`frame_0026_039`, `frame_0030_044`) were unresolvable at source
+  resolution and are excluded from the scores rather than guessed.
+- **Scoring the detections on the real pair.** `evaluate_changes.py` needs the list of changes made in the room;
+  the clips are the author's, so the 60-frame `bag` and 155-voxel region stay ungraded (sections 6, 8).
+- **`--truth-frame floor` on real data.** Runs and is unit-tested on a tilted synthetic floor, but there is no
+  ground truth in the floor frame for the real clips (section 6).
+- **Detection recall.** `check_labels.py` crops are YOLO-World's own proposals, so nothing here measures objects
+  YOLO-World missed entirely; only the labels on its boxes are scored.
+- **A second pair of real captures.** Not recorded; the split-frame control is the only no-change repeat I have,
+  so repeatability across capture sessions is untested (section 8).
+- Previously listed here and now run: the full 60-frame pipeline after the synthetic and bed changes. Those
+  changes do not touch its outputs, and the rerun confirmed it (2,032 s against 2,028 s, same outputs).
