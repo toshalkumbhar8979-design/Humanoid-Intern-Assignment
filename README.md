@@ -46,8 +46,10 @@ three datasets (synthetic, my clips, the downloaded pair):
   with zero confirmed changes; an earlier no-false-alarm result on 3 parity controls still holds a fortiori (the
   current rules only demote more), and every demoted record keeps its reason.
 
-What is still missing is the change list for the clips you provided; with it, `evaluate_changes.py` scores the
-whole pipeline on them. The label question is measured meanwhile: on the object's own crops OWLv2 reads
+You confirmed the change list — one added bag/backpack — and it now lives in `data/real_ground_truth.json`.
+Scored against it with `evaluate_changes.py`, the pipeline is **precision 1.00 / recall 1.00 on your clips**: the
+one real change found at both the voxel and the object level, zero false alarms. The label question was
+measured meanwhile: on the object's own crops OWLv2 reads
 `backpack` (0.51-0.61) or `bag` (0.25-0.48) in every frame that sees it — the region-level "black stool" label
 (0.50, from a low-resolution crop) never wins the head-to-head. The interactive viewer for my clips is
 `outputs/canonical/visualizations/viewer.html`; the example below comes from the synthetic scene.
@@ -251,8 +253,8 @@ third_party/    MASt3R checkout (clone, see Installation)
 See DESIGN.md, section 8, for the full status table. The main ones:
 
 - The voxel detector finds one region on the 60-frame pair (0 at 40 frames) and the object stage's `added bag`
-  is confirmed on it by cross-method agreement; neither is checked against a change list yet, and the voxel
-  margin over the control is thin.
+  is confirmed on it by cross-method agreement; both match your change list (1 of 1 at each level, precision
+  1.00). The voxel margin over the control is thin.
 - Recall on the ground-truthed pair is 0.62 and measured unrecoverable from those captures: the 3 misses (bowl,
   mug, skillet) lie outside or at the extreme border of the swept views, and nothing at confidence 0.10 — full
   frames or 2x-upscaled border crops — lifts to 3D at their spots (`scripts/probe_periphery.py`). Recovering

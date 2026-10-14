@@ -1,0 +1,11 @@
+{
+  "scene": "desk/room corner I filmed, 2 clips of about 32 s each (before.mp4, after.mp4)",
+  "frame_note": "Positions are optional. Metres in the bird's-eye floor frame (bev.png). Left out here: the only position available is the pipeline's own measurement, and scoring against it would be circular. Type-only scoring it is.",
+  "changes": [
+    {
+      "name": "bag (backpack)",
+      "type": "added",
+      "after_xy": null
+    }
+  ]
+}
