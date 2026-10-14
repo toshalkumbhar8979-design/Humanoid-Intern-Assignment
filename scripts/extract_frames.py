@@ -30,8 +30,22 @@ def has_black_band(bgr: np.ndarray) -> bool:
     return bool((row_max < 30).any())
 
 
+def clear_frames(out_dir: Path) -> None:
+    """Remove a previous extraction's frames and manifest from `out_dir`.
+
+    Without this, frames left over from an earlier run (different --fps or blur settings) survive in
+    the directory and pollute the downstream 40-frame sample: two identical runs of the pipeline
+    could then reconstruct different scenes and report different changes. Measured: the stale files
+    flipped the reported change on the same pair of videos. This run's output replaces them.
+    """
+    for stale in sorted(out_dir.glob("frame_*.png")):
+        stale.unlink()
+    (out_dir / "manifest.json").unlink(missing_ok=True)
+
+
 def extract(video: Path, out_dir: Path, fps: float, blur_frac: float) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
+    clear_frames(out_dir)
     tmp = Path(tempfile.mkdtemp(prefix="frames_"))
     subprocess.run(
         ["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-vf", f"fps={fps}",

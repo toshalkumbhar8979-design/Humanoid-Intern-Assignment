@@ -3,8 +3,13 @@ __pycache__/
 *.pyc
 data/before/
 data/after/
+# downloaded datasets (ObChange rosbags, annotations): too large for git
+data/datasets/
 outputs/
 models/
 
 # YOLO-World writes its CLIP text model here
 weights/
+
+# vendored MASt3R clone (follow README Installation to clone it)
+third_party/

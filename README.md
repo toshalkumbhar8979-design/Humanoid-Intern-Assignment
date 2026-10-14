@@ -17,16 +17,39 @@ each one leaves open, are in [research.md](research.md). The working rules for t
 
 ## Status on my own clips (read this first)
 
-I ran the full pipeline on my own two clips. It runs end to end (exit 0), but **it does not yet find real
-changes on them**:
+I ran the full pipeline on my own two clips and on a downloaded pair with independent ground truth (ObChange
+Kitchen). It runs end to end (exit 0). Where it stands — DESIGN.md opens with one comparison table across all
+three datasets (synthetic, my clips, the downloaded pair):
 
-- The voxel detector reports 0 changes. The reconstructions of the two clips disagree by about as much as the
-  changes themselves, and no setting I swept separates the changes from that noise (DESIGN.md, section 3).
-- The object detector, with its footprint visibility check and the YOLO-World vocabulary, confirms 0 changes on
-  the real pair. Twelve objects stay unconfirmed, each with a recorded reason in `objects.md`.
-- On the no-change control, the footprint check removes every false alarm, for both COCO and YOLO-World.
+- The object detector finds **5 of the 8 known changes on the downloaded pair at precision 1.00 (recall
+  0.62)**: the moved sugar box, the removed soup can and all three added objects, each confirmed at the right
+  physical position under one rigid transform. The 3 misses (bowl, mug, skillet) sit at the extreme periphery
+  of the captured sweep — the bowl's spot appears 1-6 pixels from the image border in only 4 of 60 frames, the
+  mug's in 9 (the reconstruction resolves bare tabletop there), and the skillet's old spot is not reconstructed
+  at all. The camera never really saw those three changes; no detector or rule can recover objects the frames
+  do not contain. Measured to the bottom (`scripts/probe_periphery.py` plus GT-spot projection): at confidence
+  0.10, on full frames and on 2x-upscaled border crops, no detection lifts to 3D at the bowl's and mug's old
+  spots or the skillet's either spot. With this detector those changes never become candidates from these
+  captures; a stronger detector might still see the few border frames, but recovering them reliably needs a
+  wider sweep at capture time.
+- On my clips the pipeline now reports **one confirmed physical change**, and it earns it honestly. The object
+  stage's `added bag` at (0.84, -0.34, 0.01) m is confirmed by cross-method agreement with the voxel stage's
+  19.4 L added region: two methods that share only the geometry report one change at one spot, and the identity
+  layer folds the region's candidates into that one record. Its own spot evidence is deliberately not enough —
+  at this capture pair's ~0.21 m reconstruction noise the no-change control produces *the same* evidence for
+  things that never moved (a `removed pillow` with 7 empty / 0 contrary / 2 unseen ring votes, against the
+  bag's 6 / 0 / 3), so a noise gate demotes every spot-only verdict to candidate and only voxel agreement
+  confirms. Ten other objects stay unconfirmed, each with its numbers in `objects.md`.
+- The voxel detector finds 1 added region on the 60-frame pair of my clips and none on the downloaded pair (0
+  of its 8 known changes). The reconstructions disagree by about as much as the changes (DESIGN.md, section 3).
+- **0 false alarms everywhere**: both no-change controls re-run with the current code (mine and ObChange's) end
+  with zero confirmed changes; an earlier no-false-alarm result on 3 parity controls still holds a fortiori (the
+  current rules only demote more), and every demoted record keeps its reason.
 
-So there are no example change outputs from my own clips yet. The example below comes from the synthetic scene.
+What is still missing is the change list for the clips you provided; with it, `evaluate_changes.py` scores the
+whole pipeline on them. Until then the bag's name stays open (YOLO says `bag`, the voxel region's own OWLv2
+label says "black stool"). The interactive viewer for my clips is
+`outputs/canonical/visualizations/viewer.html`; the example below comes from the synthetic scene.
 
 ## Example output
 
@@ -87,6 +110,38 @@ Each stage is also a standalone script in `scripts/`:
 | 7. Graphs | `make_graphs.py` | `outputs/graphs/*.png` |
 | 8. Label consistency on real crops | `check_labels.py` | `outputs/label_check/labels.json` |
 
+### Second pair with ground truth (ObChange)
+
+The pipeline is also run on a public dataset pair with object-level change annotations: the ObChange dataset
+(TU Wien, CC BY 4.0, https://researchdata.tuwien.at/records/y3ggy-hxp10), Kitchen room, scene2 (before) vs
+scene3 (after) — 8 real changes (3 added, 2 removed, 3 moved). The rosbags are large, so pull just the two
+scenes out of `Kitchen.zip` through the archive's per-file endpoint and convert the HSR head RGB stream:
+
+```bash
+curl -L -o data/datasets/obchange/scene2.bag \
+  "https://researchdata.tuwien.at/api/records/y3ggy-hxp10/files/Kitchen.zip/container/GH30_kitchen/scene2.bag"
+curl -L -o data/datasets/obchange/scene3.bag \
+  "https://researchdata.tuwien.at/api/records/y3ggy-hxp10/files/Kitchen.zip/container/GH30_kitchen/scene3.bag"
+python scripts/obchange_to_frames.py data/datasets/obchange/scene2.bag data/datasets/obchange/videos/kitchen_scene2.mp4
+python scripts/obchange_to_frames.py data/datasets/obchange/scene3.bag data/datasets/obchange/videos/kitchen_scene3.mp4
+python scripts/run_all.py --before data/datasets/obchange/videos/kitchen_scene2.mp4 \
+  --after data/datasets/obchange/videos/kitchen_scene3.mp4 \
+  --out outputs/obchange_2v3 --frames-dir data/datasets/obchange/frames --max-frames 60
+```
+
+Ground truth comes from the dataset's per-scene object poses (scenes share one coordinate frame, so diffs of
+the object lists are real changes): `obchange_gt.py` derives the change list, `score_obchange.py` scores a run
+against it. The annotations are inside `ObChange.zip` (`<Room>/sceneN/planes/*/*.anno`).
+
+```bash
+python scripts/obchange_gt.py data/datasets/obchange/extracted/Kitchen/scene2 \
+  data/datasets/obchange/extracted/Kitchen/scene3 --out data/datasets/obchange/gt_kitchen_2v3.json
+python scripts/score_obchange.py outputs/obchange_2v3 data/datasets/obchange/gt_kitchen_2v3.json
+```
+
+Scoring is type level: the dataset frame and the pipeline's floor frame differ, so positions are not compared
+until the two are registered. `data/datasets/` is git-ignored (the bags are gigabytes).
+
 ### What the object output contains
 
 `objects/objects.json` has one record per object. Each record has a `kind`:
@@ -142,10 +197,10 @@ has not been checked against ground truth, because my synthetic ground truth is 
 | Alignment recovers a known rigid perturbation of 25 deg yaw + 0.4 m shift | 2.41 deg / 4.4 cm without colour; 1.13 deg / 2.1 cm with `--color` (target 2 deg / 5 cm) |
 | Colour ICP on the real pair (60 frames) | fitness 0.6106 vs 0.6209 without; RMSE 2.21 vs 2.19 cm. No gain, so it stays off by default (measured) |
 | Change detection vs. synthetic ground truth (4 changes) | 4/4 correct kinds; moved distances 1.2 m / 0.9 m (GT 1.2 / 0.8) |
-| Voxel regions on the real pair | 40 frames: 0 regions above the noise floor. 60 frames: 1 added region (155 voxels) over the 133-voxel control cut-off; thin margin, so still open (DESIGN.md, section 3) |
+| Voxel regions on the real pair | 40 frames: 0 regions above the noise floor. 60 frames: 1 added region (19.4 L, 155 voxels) above the derived threshold over the control's largest artefact (134 voxels); thin margin (DESIGN.md, section 3) |
 | Projection convention for the visibility check | each frame's pointmap projects back onto its own pixels with 0 px median error |
-| Object stage, YOLO-World, real pair (60 frames, floor frame) | exit 0: 10 stayed, 1 confirmed change (added `bag`), 11 unconfirmed |
-| Object stage, YOLO-World, no-change controls | exit 0 on all three controls (before-odd, before-even, after-odd): 0 false alarms each |
+| Object stage, YOLO-World, real pair (60 frames, floor frame) | exit 0: 10 stayed, 1 confirmed change (added `bag`, cross-method with the voxel region), 10 unconfirmed |
+| Object stage, YOLO-World, no-change controls | 0 false alarms on every control (mine at 60 frames, ObChange's, and three parity controls). Measured once at 60 frames without the noise gate: the control itself produced a `removed pillow` with 7 empty / 0 contrary / 2 unseen — the gate exists because of that |
 | Object stage, COCO, footprint check (earlier) | real pair 6 stayed, 6 unconfirmed; control 6 stayed, 4 unconfirmed, 0 false alarms |
 | Object descriptions (`objects.md`) | generated from the YOLO-World output: the added `bag` and every unconfirmed object with its reason |
 | Object scorer (`evaluate_changes.py --objects`) | 9/9 unit tests pass, including the object mapping; no real ground truth to score yet |
@@ -153,7 +208,7 @@ has not been checked against ground truth, because my synthetic ground truth is 
 | OWLv2 labeler, real crops | `check_labels.py` against 65 hand-labelled crops: 78.5% name a visible object (63.1% the dominant one); YOLO-World 80.0% / 76.9%. The labeller is the agent, so not independent ground truth |
 | OWLv2 labeler, synthetic crops | unreliable on the low-resolution synthetic crops |
 | Graphs (`make_graphs.py`) | run on the real outputs (exit 0); PNGs written, checked through numbers only |
-| Full pipeline on the real clips | 40 frames `--no-labeler`: exit 0 in 889 s (voxel 0 changes). 60 frames with the labeler: exit 0 in 2,028 s and again in 2,032 s, same outputs (1 voxel region; 1 confirmed added `bag`, 11 unconfirmed) |
+| Full pipeline on the real clips | 40 frames `--no-labeler`: exit 0 in 889 s (voxel 0 changes). 60 frames with the labeler (now the default): exit 0 in 2,028 s and again in 2,032 s, and the canonical reproducible run (after the stale-frame extraction fix) again exit 0 end to end: 1 voxel region over the control floor, 1 confirmed added `bag` via cross-method agreement, 10 unconfirmed, control clean |
 
 `python tests/test_pipeline_glue.py` runs the post-reconstruction stages on ground-truth renders (exit 0).
 It needs no model weights and took about 20 s on the RTX 5050 machine.
@@ -178,7 +233,8 @@ third_party/    MASt3R checkout (clone, see Installation)
 
 ## Hardware and time notes
 
-- MASt3R, 512 px, sequential scene graph (swin-2), capped at 40 frames (`--max-frames`): on the real 30 s
+- MASt3R, 512 px, sequential scene graph (swin-2), capped at 60 frames (`--max-frames`, the default; 60 is
+  the densest sampling the 8 GB card fits): on the real 30 s
   clips, the 300-iteration global alignment took about 55 s per sequence on the RTX 5050. Descriptors are dropped
   per pair to stay within host RAM; with swin-5 and 84-89 frames the run ran out of memory (measured).
 - A 60-frame reconstruction also fits the 8 GB card: 7,896 MiB peak of 8,151 MiB, sampled every 3-5 s. The full
@@ -193,10 +249,20 @@ third_party/    MASt3R checkout (clone, see Installation)
 
 See DESIGN.md, section 8, for the full status table. The main ones:
 
-- The voxel detector finds one region on the 60-frame pair (0 at 40 frames) and the object detector confirms one
-  added `bag`; neither is checked against a change list yet, and the voxel margin over the control is thin.
+- The voxel detector finds one region on the 60-frame pair (0 at 40 frames) and the object stage's `added bag`
+  is confirmed on it by cross-method agreement; neither is checked against a change list yet, and the voxel
+  margin over the control is thin.
+- Recall on the ground-truthed pair is 0.62 and measured unrecoverable from those captures: the 3 misses (bowl,
+  mug, skillet) lie outside or at the extreme border of the swept views, and nothing at confidence 0.10 — full
+  frames or 2x-upscaled border crops — lifts to 3D at their spots (`scripts/probe_periphery.py`). Recovering
+  them needs a wider sweep at capture time, not a rule change.
+- Confirmation at noisy capture pairs needs two methods by design: the control's false alarms carry spot
+  evidence statistically indistinguishable from real changes' (7/0/2 vs the bag's 6/0/3), so a run without the
+  voxel stage reports candidates, never proven changes, when the measured noise exceeds the spot test's
+  resolution.
 - The object vocabulary has 30 names. Objects outside that list are not found.
-- The footprint check is horizontal at the object's centre height, so it does not cover an object's full height.
+- The footprint check is horizontal at the object's base height (laid flat in the floor frame), so it does not
+  cover an object's full height.
 - The synthetic clips had rendering artefacts (black bands); the generator now renders in fresh-renderer chunks
   and both clips come out clean (0 of 720 frames flagged). They are still used only for geometric validation.
 - OWLv2 labels need real-resolution crops (the synthetic crops are too small). On 65 hand-labelled real crops it
