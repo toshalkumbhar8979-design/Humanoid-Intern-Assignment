@@ -39,8 +39,12 @@ Null check (run this as well): pass the control capture as the 'after' side. Eve
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+
+# deterministic CUDA matmuls: must be set before the CUDA context is created
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import numpy as np
 from PIL import Image
@@ -827,6 +831,12 @@ def main() -> int:
 
     import torch
     from ultralytics import YOLO, YOLOWorld
+    # deterministic inference (defence in depth). The run-to-run wobble this stage used to show was
+    # traced to the RANSAC floor fit in registration.align (now seeded there); these flags keep the
+    # detector itself reproducible too. Verified by running this stage twice and diffing objects.json.
+    torch.manual_seed(0)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     device = 0 if torch.cuda.is_available() else "cpu"
     if args.detector == "yolo-world":
         model = YOLOWorld(str(args.model or WORLD_MODEL))

@@ -106,8 +106,10 @@ def estimate_up(points: np.ndarray, cam0_c2w: np.ndarray, runs: int = 15, **kwar
 
     RANSAC picks a slightly different floor on each run (4-16 deg spread on the same points), so we take
     the coordinate-wise median of `runs` passes (after sign alignment) and recompute the offset from the
-    pooled floor inliers along that 'up'.
+    pooled floor inliers along that 'up'. The RNG is seeded, so the fit is reproducible: identical inputs
+    give an identical floor frame (measured by running the object stage twice and diffing its output).
     """
+    o3d.utility.random.seed(0)
     results = [_estimate_up_once(points, cam0_c2w, **kwargs) for _ in range(runs)]
     ref = results[0][0]
     ups = np.array([u if u @ ref >= 0 else -u for u, _, _ in results])
@@ -180,6 +182,7 @@ def align(points_before: np.ndarray, points_after: np.ndarray, voxel: float = 0.
           up_after: np.ndarray | None = None, colors_before: np.ndarray | None = None,
           colors_after: np.ndarray | None = None, use_color: bool = False) -> AlignResult:
     src, tgt = _to_pcd(points_after, voxel), _to_pcd(points_before, voxel)
+    o3d.utility.random.seed(0)   # deterministic RANSAC: same inputs, same alignment
 
     # FPFH + RANSAC (global, no prior)
     fpfh_r = o3d.geometry.KDTreeSearchParamHybrid(radius=voxel * 5, max_nn=100)

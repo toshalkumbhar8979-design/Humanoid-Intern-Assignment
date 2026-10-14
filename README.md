@@ -29,9 +29,9 @@ three datasets (synthetic, my clips, the downloaded pair):
   at all. The camera never really saw those three changes; no detector or rule can recover objects the frames
   do not contain. Measured to the bottom (`scripts/probe_periphery.py` plus GT-spot projection): at confidence
   0.10, on full frames and on 2x-upscaled border crops, no detection lifts to 3D at the bowl's and mug's old
-  spots or the skillet's either spot. With this detector those changes never become candidates from these
-  captures; a stronger detector might still see the few border frames, but recovering them reliably needs a
-  wider sweep at capture time.
+  spots or the skillet's either spot. A second detector family agrees: OWLv2 finds bowls in those frames, but
+  they are *other* bowls 1.7 m from the ground-truth spot — the missed objects themselves are never detected
+  anywhere, at any confidence. Recovering them reliably needs a wider sweep at capture time.
 - On my clips the pipeline now reports **one confirmed physical change**, and it earns it honestly. The object
   stage's `added bag` at (0.84, -0.34, 0.01) m is confirmed by cross-method agreement with the voxel stage's
   19.4 L added region: two methods that share only the geometry report one change at one spot, and the identity
@@ -47,8 +47,9 @@ three datasets (synthetic, my clips, the downloaded pair):
   current rules only demote more), and every demoted record keeps its reason.
 
 What is still missing is the change list for the clips you provided; with it, `evaluate_changes.py` scores the
-whole pipeline on them. Until then the bag's name stays open (YOLO says `bag`, the voxel region's own OWLv2
-label says "black stool"). The interactive viewer for my clips is
+whole pipeline on them. The label question is measured meanwhile: on the object's own crops OWLv2 reads
+`backpack` (0.51-0.61) or `bag` (0.25-0.48) in every frame that sees it — the region-level "black stool" label
+(0.50, from a low-resolution crop) never wins the head-to-head. The interactive viewer for my clips is
 `outputs/canonical/visualizations/viewer.html`; the example below comes from the synthetic scene.
 
 ## Example output
