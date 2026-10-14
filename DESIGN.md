@@ -9,7 +9,7 @@ code: floor-frame positions, height-aware footprint spot test, footprint ring 0.
 pairing noise band from each domain's control, physical-coherence rules (split-on-vanish, duplicate folding,
 scene-structure demotion) and the evidence bar (section 4).
 
-| | Synthetic pair (rendered desk) | Your video (before/after.mp4) | Downloaded videos (ObChange Kitchen 2->3) |
+| | Synthetic pair (rendered desk) | Dataset 2  (before/after.mp4) | Downloaded videos (ObChange Kitchen 2->3) |
 |---|---|---|---|
 | Ground truth | 4 scripted changes (2 moved, 1 added, 1 removed) | 1 change, confirmed by you: one added bag/backpack (`data/real_ground_truth.json`, type level) | 8 annotated changes (3 added, 2 removed, 3 moved), independent of the pipeline |
 | Alignment | 1.13 deg / 2.1 cm error against the known perturbation (with colour) | fitness 0.62-0.65, inlier RMSE 2.2-2.4 cm | fitness 0.9238, inlier RMSE 1.68 cm (best of the three) |
